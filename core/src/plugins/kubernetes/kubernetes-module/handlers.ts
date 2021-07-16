@@ -8,7 +8,6 @@
 
 import { V1DaemonSet, V1Deployment, V1StatefulSet } from "@kubernetes/client-node"
 import Bluebird from "bluebird"
-import chalk from "chalk"
 
 import { cloneDeep, partition, set, uniq } from "lodash"
 import { LogEntry } from "../../../logger/log-entry"
@@ -113,12 +112,13 @@ export async function getKubernetesServiceStatus({
     if (target.metadata.annotations?.[gardenAnnotationKey("dev-mode")] === "true") {
       await startDevModeSync({
         ctx,
-        log: log.info({ section: service.name, symbol: "info", msg: chalk.gray(`Starting sync`) }),
+        log,
         moduleRoot: service.sourceModule.path,
         namespace,
         target,
         spec: service.spec.devMode,
         containerName: service.spec.devMode.containerName,
+        serviceName: service.name,
       })
     } else {
       state = "outdated"
@@ -207,12 +207,13 @@ export async function deployKubernetesService(
   if (devMode && service.spec.devMode && target) {
     await startDevModeSync({
       ctx,
-      log: log.info({ section: service.name, symbol: "info", msg: chalk.gray(`Starting sync`) }),
+      log,
       moduleRoot: service.sourceModule.path,
       namespace,
       target,
       spec: service.spec.devMode,
       containerName: service.spec.devMode.containerName,
+      serviceName: service.name,
     })
   }
 
