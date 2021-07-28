@@ -518,14 +518,7 @@ export class GitHandler extends VcsHandler {
       return (await git("rev-parse", "--abbrev-ref", "HEAD"))[0]
     } catch (err) {
       if (err.exitCode === 128) {
-        try {
-          // If this doesn't throw, then we're in a repo with no commits, or with a detached HEAD.
-          await git("rev-parse", "--show-toplevel")
-          return undefined
-        } catch (notInRepoError) {
-          // Throw nice error when we detect that we're not in a repo root
-          throw new RuntimeError(notInRepoRootErrorMessage(path), { path })
-        }
+        return undefined
       } else {
         throw err
       }

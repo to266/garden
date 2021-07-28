@@ -6,7 +6,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { isString, omit } from "lodash"
+import { isString } from "lodash"
+import { ErrorEvent } from "ws"
 
 export interface GardenError {
   type: string
@@ -32,8 +33,6 @@ export function toGardenError(err: Error | ErrorEvent | GardenBaseError | string
     const out = new RuntimeError(err.message, err)
     out.stack = err.stack
     return out
-  } else if (err instanceof ErrorEvent) {
-    return new RuntimeError(err.message, err)
   } else if (isString(err)) {
     return new RuntimeError(err, {})
   } else {
