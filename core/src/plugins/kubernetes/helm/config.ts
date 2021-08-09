@@ -33,6 +33,8 @@ import {
   namespaceNameSchema,
   containerModuleSchema,
   hotReloadArgsSchema,
+  portForwardsSchema,
+  PortForwardSpec,
 } from "../config"
 import { posix } from "path"
 import { runPodSpecIncludeFields } from "../run"
@@ -56,6 +58,7 @@ export interface HelmServiceSpec {
   dependencies: string[]
   devMode?: KubernetesDevModeSpec
   namespace?: string
+  portForwards?: PortForwardSpec[]
   releaseName?: string
   repo?: string
   serviceResource?: ServiceResourceSpec
@@ -164,7 +167,15 @@ export const helmModuleSpecSchema = () =>
       "List of names of services that should be deployed before this chart."
     ),
     devMode: kubernetesDevModeSchema(),
+    include: joiModuleIncludeDirective(dedent`
+      If neither \`include\` nor \`exclude\` is set, and the module has local chart sources, Garden
+      automatically sets \`include\` to: \`["*", "charts/**/*", "templates/**/*"]\`.
+
+      If neither \`include\` nor \`exclude\` is set and the module specifies a remote chart, Garden
+      automatically sets \`ìnclude\` to \`[]\`.
+    `),
     namespace: namespaceNameSchema(),
+    portForwards: portForwardsSchema(),
     releaseName: joiIdentifier().description(
       "Optionally override the release name used when installing (defaults to the module name)."
     ),
@@ -185,13 +196,6 @@ export const helmModuleSpecSchema = () =>
         deline`Set this to true if the chart should only be built, but not deployed as a service.
       Use this, for example, if the chart should only be used as a base for other modules.`
       ),
-    include: joiModuleIncludeDirective(dedent`
-      If neither \`include\` nor \`exclude\` is set, and the module has local chart sources, Garden
-      automatically sets \`include\` to: \`["*", "charts/**/*", "templates/**/*"]\`.
-
-      If neither \`include\` nor \`exclude\` is set and the module specifies a remote chart, Garden
-      automatically sets \`ìnclude\` to \`[]\`.
-    `),
     tasks: joiSparseArray(helmTaskSchema()).description("The task definitions for this module."),
     tests: joiSparseArray(helmTestSchema()).description("The test suite definitions for this module."),
     timeout: joi

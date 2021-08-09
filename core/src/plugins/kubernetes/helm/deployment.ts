@@ -126,7 +126,7 @@ export async function deployHelmService({
     log,
   })
 
-  const forwardablePorts = getForwardablePorts(manifests)
+  const forwardablePorts = getForwardablePorts(manifests, service)
 
   // Make sure port forwards work after redeployment
   killPortForwards(service, forwardablePorts || [], log)
