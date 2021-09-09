@@ -25,7 +25,7 @@ describe("runKubernetesTask", () => {
   })
 
   beforeEach(async () => {
-    graph = await garden.getConfigGraph(garden.log)
+    graph = await garden.getConfigGraph({ log: garden.log, emit: false })
   })
 
   it("should run a basic task and store its result", async () => {
@@ -62,6 +62,7 @@ describe("runKubernetesTask", () => {
     const storedResult = await actions.getTaskResult({
       log: garden.log,
       task,
+      graph,
     })
 
     expect(storedResult).to.exist
@@ -94,6 +95,7 @@ describe("runKubernetesTask", () => {
     const storedResult = await actions.getTaskResult({
       log: garden.log,
       task,
+      graph,
     })
 
     expect(storedResult).to.not.exist
@@ -149,6 +151,7 @@ describe("runKubernetesTask", () => {
     const result = await actions.getTaskResult({
       log: garden.log,
       task,
+      graph,
     })
 
     expect(result).to.exist

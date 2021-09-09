@@ -46,7 +46,7 @@ import { LocalConfigStore, ConfigStore, GlobalConfigStore, LinkedSource } from "
 import { getLinkedSources, ExternalSourceType } from "./util/ext-source-util"
 import { BuildDependencyConfig, ModuleConfig } from "./config/module"
 import { ModuleResolver, moduleResolutionConcurrencyLimit } from "./resolve-module"
-import { createPluginContext, CommandInfo } from "./plugin-context"
+import { createPluginContext, CommandInfo, PluginEventBroker } from "./plugin-context"
 import { ModuleAndRuntimeActionHandlers, RegisterPluginParam } from "./types/plugin/plugin"
 import { SUPPORTED_PLATFORMS, SupportedPlatform, DEFAULT_GARDEN_DIR_NAME, gardenEnv } from "./constants"
 import { LogEntry } from "./logger/log-entry"
@@ -300,6 +300,10 @@ export class Garden {
     opts: GardenOpts
   ): Promise<InstanceType<T>> {
     const garden = new this(await resolveGardenParams(currentDirectory, opts)) as InstanceType<T>
+
+    // Make sure the project root is in a git repo
+    await garden.getRepoRoot()
+
     return garden
   }
 
@@ -313,18 +317,26 @@ export class Garden {
   }
 
   /**
+   * Get the repository root for the project.
+   */
+  async getRepoRoot() {
+    return this.vcs.getRepoRoot(this.log, this.projectRoot)
+  }
+
+  /**
    * Returns a new PluginContext, i.e. the `ctx` object that's passed to plugin handlers.
    *
    * The object contains a helper to resolve template strings. By default the templating context is set to the
    * provider template context. Callers should specify the appropriate templating for the handler that will be
    * called with the PluginContext.
    */
-  async getPluginContext(provider: Provider, templateContext?: ConfigContext) {
+  async getPluginContext(provider: Provider, templateContext?: ConfigContext, events?: PluginEventBroker) {
     return createPluginContext(
       this,
       provider,
       this.opts.commandInfo,
-      templateContext || new ProviderConfigContext(this, provider.dependencies, this.variables)
+      templateContext || new ProviderConfigContext(this, provider.dependencies, this.variables),
+      events
     )
   }
 
@@ -653,8 +665,20 @@ export class Garden {
    * Resolve the raw module configs and return a new instance of ConfigGraph.
    * The graph instance is immutable and represents the configuration at the point of calling this method.
    * For long-running processes, you need to call this again when any module or configuration has been updated.
+   *
+   * If `emit = true` is passed, a `stackGraph` event with a rendered DAG representation of the graph will be emitted.
+   * When implementing a new command that calls this method and also streams events, make sure that the first
+   * call to `getConfigGraph` in the command uses `emit = true` to ensure that the graph event gets streamed.
    */
-  async getConfigGraph(log: LogEntry, runtimeContext?: RuntimeContext) {
+  async getConfigGraph({
+    log,
+    runtimeContext,
+    emit,
+  }: {
+    log: LogEntry
+    runtimeContext?: RuntimeContext
+    emit: boolean
+  }) {
     const resolvedProviders = await this.resolveProviders(log)
     const rawConfigs = await this.getRawModuleConfigs()
 
@@ -824,6 +848,10 @@ export class Garden {
       },
       { concurrency: moduleResolutionConcurrencyLimit }
     )
+
+    if (emit) {
+      this.events.emit("stackGraph", graph.render())
+    }
 
     return graph
   }
@@ -1113,7 +1141,7 @@ export class Garden {
       moduleConfigs = await this.getRawModuleConfigs()
       workflowConfigs = await this.getRawWorkflowConfigs()
     } else {
-      const graph = await this.getConfigGraph(log)
+      const graph = await this.getConfigGraph({ log, emit: false })
       const modules = graph.getModules({ includeDisabled })
       workflowConfigs = (await this.getRawWorkflowConfigs()).map((config) => resolveWorkflowConfig(this, config))
 
@@ -1313,7 +1341,12 @@ export class DummyGarden extends Garden {
   async resolveProviders() {
     return {}
   }
+
   async scanAndAddConfigs() {}
+
+  async getRepoRoot() {
+    return ""
+  }
 }
 
 export interface ConfigDump {

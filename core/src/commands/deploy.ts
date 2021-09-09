@@ -28,6 +28,7 @@ import { DeployTask } from "../tasks/deploy"
 import { naturalList } from "../util/string"
 import chalk = require("chalk")
 import { StringsParameter, BooleanParameter, ParameterValues } from "../cli/params"
+import { Garden } from "../garden"
 
 export const deployArgs = {
   services: new StringsParameter({
@@ -91,14 +92,16 @@ export class DeployCommand extends Command<Args, Opts> {
         garden deploy service-a,service-b  # only deploy service-a and service-b
         garden deploy --force              # force re-deploy of modules, even if they're already deployed
         garden deploy --watch              # watch for changes to code
-        garden deploy --hot=my-service     # deploys all services, with hot reloading enabled for my-service
-        garden deploy --hot=*              # deploys all compatible services with hot reloading enabled
+        garden deploy --dev=my-service     # deploys all services, with dev mode enabled for my-service
+        garden deploy --dev                # deploys all compatible services with dev mode enabled
         garden deploy --env stage          # deploy your services to an environment called stage
         garden deploy --skip service-b     # deploy all services except service-b
   `
 
   arguments = deployArgs
   options = deployOpts
+
+  private garden?: Garden
 
   outputsSchema = () => processCommandResultSchema()
 
@@ -118,18 +121,25 @@ export class DeployCommand extends Command<Args, Opts> {
     return { persistent }
   }
 
+  terminate() {
+    this.garden?.events.emit("_exit", {})
+  }
+
   async action({
     garden,
+    isWorkflowStepCommand,
     log,
     footerLog,
     args,
     opts,
   }: CommandParams<Args, Opts>): Promise<CommandResult<ProcessCommandResult>> {
+    this.garden = garden
+
     if (this.server) {
       this.server.setGarden(garden)
     }
 
-    const initGraph = await garden.getConfigGraph(log)
+    const initGraph = await garden.getConfigGraph({ log, emit: !isWorkflowStepCommand })
     let services = initGraph.getServices({ names: args.services, includeDisabled: true })
 
     const disabled = services.filter((s) => s.disabled).map((s) => s.name)

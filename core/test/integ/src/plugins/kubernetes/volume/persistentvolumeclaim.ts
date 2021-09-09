@@ -75,7 +75,7 @@ describe("persistentvolumeclaim", () => {
       },
     ])
 
-    const graph = await garden.getConfigGraph(garden.log)
+    const graph = await garden.getConfigGraph({ log: garden.log, emit: false })
     const service = graph.getService("test")
 
     const deployTask = new DeployTask({
@@ -97,6 +97,7 @@ describe("persistentvolumeclaim", () => {
       service,
       devMode: false,
       hotReload: false,
+      graph,
       runtimeContext: emptyRuntimeContext,
     })
 
@@ -113,6 +114,6 @@ describe("persistentvolumeclaim", () => {
       })
     ).to.be.true
 
-    await actions.deleteService({ log: garden.log, service })
+    await actions.deleteService({ log: garden.log, service, graph })
   })
 })

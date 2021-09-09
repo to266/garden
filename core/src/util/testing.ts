@@ -89,6 +89,7 @@ export class TestGarden extends Garden {
     const garden = new this(
       await resolveGardenParams(currentDirectory, { commandInfo: defaultCommandinfo, ...opts })
     ) as InstanceType<T>
+    await garden.getRepoRoot()
     return garden
   }
 
@@ -116,7 +117,7 @@ export class TestGarden extends Garden {
     runtimeContext?: RuntimeContext
     includeDisabled?: boolean
   }): Promise<GardenModule[]> {
-    const graph = await this.getConfigGraph(log, runtimeContext)
+    const graph = await this.getConfigGraph({ log, runtimeContext, emit: false })
     return graph.getModules({ includeDisabled })
   }
 

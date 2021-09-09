@@ -26,7 +26,7 @@ describe("testHelmModule", () => {
   })
 
   beforeEach(async () => {
-    graph = await garden.getConfigGraph(garden.log)
+    graph = await garden.getConfigGraph({ log: garden.log, emit: false })
   })
 
   it("should run a basic test", async () => {
@@ -108,6 +108,7 @@ describe("testHelmModule", () => {
       log: garden.log,
       module,
       test,
+      graph,
     })
 
     expect(result).to.exist

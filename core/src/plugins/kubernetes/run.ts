@@ -6,7 +6,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { resolve } from "path"
 import tar from "tar"
 import tmp from "tmp-promise"
 import { cloneDeep, omit, pick } from "lodash"
@@ -24,17 +23,16 @@ import {
   OutOfMemoryError,
 } from "../../exceptions"
 import { KubernetesProvider } from "./config"
-import { Writable, Readable } from "stream"
+import { Writable, Readable, PassThrough } from "stream"
 import { uniqByName, sleep } from "../../util/util"
 import { KubeApi } from "./api"
 import { getPodLogs, checkPodStatus } from "./status/pod"
-import { KubernetesResource, KubernetesPod } from "./types"
+import { KubernetesResource, KubernetesPod, KubernetesServerResource } from "./types"
 import { RunModuleParams } from "../../types/plugin/module/runModule"
 import { ContainerEnvVars, ContainerResourcesSpec, ContainerVolumeSpec } from "../container/config"
 import { prepareEnvVars, makePodName } from "./util"
-import { deline } from "../../util/string"
+import { deline, randomString } from "../../util/string"
 import { ArtifactSpec } from "../../config/validation"
-import cpy from "cpy"
 import { prepareImagePullSecrets } from "./secrets"
 import { configureVolumes } from "./container/deployment"
 import { PluginContext } from "../../plugin-context"
@@ -42,6 +40,7 @@ import { waitForResources, ResourceStatus } from "./status/status"
 import { RuntimeContext } from "../../runtime-context"
 import { getResourceRequirements } from "./container/util"
 import { KUBECTL_DEFAULT_TIMEOUT } from "./kubectl"
+import { copy } from "fs-extra"
 
 // Default timeout for individual run/exec operations
 const defaultTimeout = 600
@@ -112,8 +111,6 @@ export async function runAndCopy({
   envVars = {},
   resources,
   description,
-  stdout,
-  stderr,
   namespace,
   version,
   volumes,
@@ -127,8 +124,6 @@ export async function runAndCopy({
   envVars?: ContainerEnvVars
   resources?: ContainerResourcesSpec
   description?: string
-  stdout?: Writable
-  stderr?: Writable
   namespace: string
   version: string
   volumes?: ContainerVolumeSpec[]
@@ -170,6 +165,13 @@ export async function runAndCopy({
     podName = makePodName("run", module.name)
   }
 
+  const outputStream = new PassThrough()
+
+  outputStream.on("error", () => {})
+  outputStream.on("data", (data: Buffer) => {
+    ctx.events.emit("log", { timestamp: new Date().getTime(), data })
+  })
+
   const runParams = {
     ctx,
     api,
@@ -185,6 +187,8 @@ export async function runAndCopy({
     podName,
     namespace,
     version,
+    stdout: outputStream,
+    stderr: outputStream,
   }
 
   if (getArtifacts) {
@@ -195,8 +199,6 @@ export async function runAndCopy({
       artifactsPath: artifactsPath!,
       description,
       errorMetadata,
-      stdout,
-      stderr,
     })
   } else {
     return runWithoutArtifacts(runParams)
@@ -317,6 +319,8 @@ async function runWithoutArtifacts({
   timeout,
   podSpec,
   podName,
+  stdout,
+  stderr,
   namespace,
   interactive,
   version,
@@ -325,6 +329,8 @@ async function runWithoutArtifacts({
   provider: KubernetesProvider
   podSpec: V1PodSpec
   podName: string
+  stdout: Writable
+  stderr: Writable
   namespace: string
   version: string
 }): Promise<RunResult> {
@@ -355,6 +361,8 @@ async function runWithoutArtifacts({
       remove: true,
       timeoutSec: timeout || defaultTimeout,
       tty: !!interactive,
+      stdout,
+      stderr,
     })
     result = {
       ...res,
@@ -424,8 +432,8 @@ async function runWithArtifacts({
   artifactsPath: string
   description?: string
   errorMetadata: any
-  stdout?: Writable
-  stderr?: Writable
+  stdout: Writable
+  stderr: Writable
   namespace: string
   version: string
 }): Promise<RunResult> {
@@ -576,79 +584,81 @@ async function runWithArtifacts({
       }
     }
 
+    // TODO: only interpret target as directory if it ends with a slash (breaking change, so slated for 0.13)
+    const directoriesToCreate = artifacts.map((a) => a.target).filter((target) => !!target && target !== ".")
+    const tmpPath = "/tmp/.garden-artifacts-" + randomString(8)
+
+    // This script will
+    // 1. Create temp directory in the container
+    // 2. Create directories for each target, as necessary
+    // 3. Recursively (and silently) copy all specified artifact files/directories into the temp directory
+    // 4. Tarball the directory and pipe to stdout
+    // TODO: escape the user paths somehow?
+    const tarScript = `
+rm -rf ${tmpPath} >/dev/null || true
+mkdir -p ${tmpPath}
+cd ${tmpPath}
+touch .garden-placeholder
+${directoriesToCreate.map((target) => `mkdir -p ${target}`).join("\n")}
+${artifacts.map(({ source, target }) => `cp -r ${source} ${target || "."} >/dev/null || true`).join("\n")}
+tar -c -z -f - . | cat
+rm -rf ${tmpPath} >/dev/null || true
+    `
+
     // Copy the artifacts
-    await Promise.all(
-      artifacts.map(async (artifact) => {
-        const tmpDir = await tmp.dir({ unsafeCleanup: true })
-        // Remove leading slash (which is required in the schema)
-        const sourcePath = artifact.source.slice(1)
-        const targetPath = resolve(artifactsPath, artifact.target || ".")
+    const tmpDir = await tmp.dir({ unsafeCleanup: true })
 
-        const tarCmd = [
-          "tar",
-          "-c", // create an archive
-          "-f",
-          "-", // pipe to stdout
-          // Files to match. The .DS_Store file is a trick to avoid errors when no files are matched. The file is
-          // ignored later when copying from the temp directory. See https://github.com/sindresorhus/cpy#ignorejunk
-          `$(ls ${sourcePath} 2>/dev/null) /tmp/.DS_Store`,
-          // Fix issue https://github.com/garden-io/garden/issues/2445
-          "| cat",
-        ]
+    try {
+      await new Promise<void>((_resolve, reject) => {
+        // Create an extractor to receive the tarball we will stream from the container
+        // and extract to the artifacts directory.
+        let done = 0
 
-        try {
-          await new Promise<void>((_resolve, reject) => {
-            // Create an extractor to receive the tarball we will stream from the container
-            // and extract to the artifacts directory.
-            let done = 0
+        const extractor = tar.x({
+          cwd: tmpDir.path,
+          strict: true,
+          onentry: (entry) => log.debug("tar: got entry " + entry.path),
+        })
 
-            const extractor = tar.x({
-              cwd: tmpDir.path,
-              strict: true,
-              onentry: (entry) => log.debug("tar: got file " + entry.path),
-            })
+        extractor.on("end", () => {
+          // Need to make sure both processes are complete before resolving (may happen in either order)
+          done++
+          done === 2 && _resolve()
+        })
+        extractor.on("error", (err) => {
+          reject(err)
+        })
 
-            extractor.on("end", () => {
-              // Need to make sure both processes are complete before resolving (may happen in either order)
-              done++
-              done === 2 && _resolve()
-            })
-            extractor.on("error", (err) => {
-              reject(err)
-            })
-
-            // Tarball the requested files and stream to the above extractor.
-            runner
-              .exec({
-                command: ["sh", "-c", "cd / && touch /tmp/.DS_Store && " + tarCmd.join(" ")],
-                containerName: mainContainerName,
-                log,
-                stdout: extractor,
-                timeoutSec,
-                buffer: false,
-              })
-              .then(() => {
-                // Need to make sure both processes are complete before resolving (may happen in either order)
-                done++
-                done === 2 && _resolve()
-              })
-              .catch(reject)
+        // Tarball the requested files and stream to the above extractor.
+        runner
+          .exec({
+            command: ["sh", "-c", tarScript],
+            containerName: mainContainerName,
+            log,
+            stdout: extractor,
+            timeoutSec,
+            buffer: false,
           })
-
-          // Copy the resulting files to the artifacts directory
-          try {
-            await cpy("**/*", targetPath, { cwd: tmpDir.path, ignoreJunk: true })
-          } catch (err) {
-            // Ignore error thrown when the directory is empty
-            if (err.name !== "CpyError" || !err.message.includes("the file doesn't exist")) {
-              throw err
-            }
-          }
-        } finally {
-          await tmpDir.cleanup()
-        }
+          .then(() => {
+            // Need to make sure both processes are complete before resolving (may happen in either order)
+            done++
+            done === 2 && _resolve()
+          })
+          .catch(reject)
       })
-    )
+
+      // Copy the resulting files to the artifacts directory
+      try {
+        await copy(tmpDir.path, artifactsPath, { filter: (f) => !f.endsWith(".garden-placeholder") })
+      } catch (err) {
+        // Ignore error thrown when the directory is empty
+        if (err.name !== "CpyError" || !err.message.includes("the file doesn't exist")) {
+          throw err
+        }
+      }
+    } finally {
+      await tmpDir.cleanup()
+    }
   } finally {
     await runner.stop()
   }
@@ -672,7 +682,7 @@ class PodRunnerParams {
   ctx: PluginContext
   annotations?: { [key: string]: string }
   api: KubeApi
-  pod: KubernetesPod
+  pod: KubernetesPod | KubernetesServerResource<V1Pod>
   namespace: string
   provider: KubernetesProvider
 }
@@ -758,12 +768,17 @@ export class PodRunner extends PodRunnerParams {
     const mainContainerName = this.getMainContainerName()
 
     if (tty) {
-      if (stdout || stderr || stdin) {
-        throw new ParameterError(`Cannot set both tty and stdout/stderr/stdin streams`, { params })
+      if (stdout) {
+        stdout.pipe(process.stdout)
+      } else {
+        stdout = process.stdout
+      }
+      if (stderr) {
+        stderr.pipe(process.stderr)
+      } else {
+        stderr = process.stderr
       }
 
-      stdout = process.stdout
-      stderr = process.stderr
       stdin = process.stdin
     }
 
@@ -831,6 +846,15 @@ export class PodRunner extends PodRunnerParams {
         if (!attached && (tty || stdout || stderr)) {
           // Try to attach to Pod to stream logs
           try {
+            /**
+             * TODO: We miss out on any pod log lines that get written before we manage to attach to the pod. Thi
+             *  means that we can't guarantee that we'll pipe logs from the first 1-2 seconds (more, if several retries
+             * of this `while`-loop are needed) of the runner pod's execution to the `stdout`/`stderr` streams
+             * provided to this method.
+             *
+             * If this becomes a problem, we may need to come up with a different approach to ensure we stream those
+             * first few log lines.
+             */
             await this.api.attachToPod({
               namespace,
               podName,
@@ -856,7 +880,7 @@ export class PodRunner extends PodRunnerParams {
           })
         }
 
-        await sleep(200)
+        await sleep(800)
       }
 
       // Retrieve logs after run

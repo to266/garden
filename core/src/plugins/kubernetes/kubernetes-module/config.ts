@@ -24,6 +24,9 @@ import {
   namespaceNameSchema,
   containerModuleSchema,
   hotReloadArgsSchema,
+  serviceResourceDescription,
+  portForwardsSchema,
+  PortForwardSpec,
 } from "../config"
 import { ContainerModule } from "../../container/config"
 import { kubernetesDevModeSchema, KubernetesDevModeSpec } from "../dev-mode"
@@ -40,8 +43,9 @@ export interface KubernetesServiceSpec {
   dependencies: string[]
   devMode?: KubernetesDevModeSpec
   files: string[]
-  namespace?: string
   manifests: KubernetesResource[]
+  namespace?: string
+  portForwards?: PortForwardSpec[]
   serviceResource?: ServiceResourceSpec
   tasks: KubernetesTaskSpec[]
   tests: KubernetesTestSpec[]
@@ -70,11 +74,7 @@ export const kubernetesModuleSpecSchema = () =>
   joi.object().keys({
     build: baseBuildSpecSchema(),
     dependencies: dependenciesSchema(),
-    manifests: joiSparseArray(kubernetesResourceSchema()).description(
-      deline`
-          List of Kubernetes resource manifests to deploy. Use this instead of the \`files\` field if you need to
-          resolve template strings in any of the manifests.`
-    ),
+    devMode: kubernetesDevModeSchema(),
     files: joiSparseArray(joi.posixPath().subPathOnly()).description(
       "POSIX-style paths to YAML files to load manifests from. Each can contain multiple manifests, and can include any Garden template strings, which will be resolved before applying the manifests."
     ),
@@ -82,12 +82,20 @@ export const kubernetesModuleSpecSchema = () =>
       If neither \`include\` nor \`exclude\` is set, Garden automatically sets \`include\` to equal the
       \`files\` directive so that only the Kubernetes manifests get included.
     `),
+    manifests: joiSparseArray(kubernetesResourceSchema()).description(
+      deline`
+          List of Kubernetes resource manifests to deploy. Use this instead of the \`files\` field if you need to
+          resolve template strings in any of the manifests.`
+    ),
     namespace: namespaceNameSchema(),
-    devMode: kubernetesDevModeSchema(),
+    portForwards: portForwardsSchema(),
     serviceResource: serviceResourceSchema()
       .description(
         dedent`
-        The Deployment, DaemonSet or StatefulSet that Garden should regard as the _Garden service_ in this module (not to be confused with Kubernetes Service resources).
+        The Deployment, DaemonSet or StatefulSet or Pod that Garden should regard as the _Garden service_ in this module (not to be confused with Kubernetes Service resources).
+
+        ${serviceResourceDescription}
+
         Because a \`kubernetes\` module can contain any number of Kubernetes resources, this needs to be specified for certain Garden features and commands to work.
         `
       )

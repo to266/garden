@@ -16,7 +16,7 @@ import { KubernetesPod, KubernetesDeployment, KubernetesResource } from "../type
 import { flatten, uniq, difference } from "lodash"
 import { V1Container } from "@kubernetes/client-node"
 import { queryRegistry } from "../container/util"
-import { sleep, splitFirst, splitLast } from "../../../util/util"
+import { splitFirst, splitLast } from "../../../util/util"
 import { LogEntry } from "../../../logger/log-entry"
 import Bluebird from "bluebird"
 import { CLUSTER_REGISTRY_DEPLOYMENT_NAME, inClusterRegistryHostname, dockerDaemonContainerName } from "../constants"
@@ -309,9 +309,9 @@ async function runRegistryGarbageCollection(ctx: KubernetesPluginContext, api: K
       },
       {
         retries: 3,
-        onFailedAttempt: async () => {
-          log.warn("Failed to patch deployment, retrying in 5 seconds...")
-          await sleep(5)
+        minTimeout: 2000,
+        onFailedAttempt: async (err) => {
+          log.warn(`Failed to patch deployment. ${err.retriesLeft} attempts left.`)
         },
       }
     )

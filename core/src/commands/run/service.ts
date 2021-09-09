@@ -70,7 +70,7 @@ export class RunServiceCommand extends Command<Args, Opts> {
 
   async action({ garden, log, args, opts }: CommandParams<Args, Opts>): Promise<CommandResult<RunServiceOutput>> {
     const serviceName = args.service
-    const graph = await garden.getConfigGraph(log)
+    const graph = await garden.getConfigGraph({ log, emit: false })
     const service = graph.getService(serviceName, true)
 
     if (service.disabled && !opts.force) {
@@ -122,6 +122,7 @@ export class RunServiceCommand extends Command<Args, Opts> {
 
     const result = await actions.runService({
       log,
+      graph,
       service,
       runtimeContext,
       interactive,

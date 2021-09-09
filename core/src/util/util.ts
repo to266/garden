@@ -169,7 +169,7 @@ interface ExecOpts extends execa.Options {
  */
 export async function exec(cmd: string, args: string[], opts: ExecOpts = {}) {
   // Ensure buffer is always set to true so that we can read the error output
-  opts = { ...opts, buffer: true, all: true }
+  opts = { windowsHide: true, ...opts, buffer: true, all: true }
   const proc = execa(cmd, args, omit(opts, ["stdout", "stderr"]))
 
   opts.stdout && proc.stdout && proc.stdout.pipe(opts.stdout)
@@ -227,6 +227,11 @@ export interface SpawnOutput {
 }
 
 // TODO Dump output to a log file if it exceeds the MAX_BUFFER_SIZE
+
+/**
+ * Note: For line-by-line stdout/stderr streaming, both `opts.stdout` and `opts.stderr` must be defined. This is a
+ * result of how Node's child process spawning works (which this function wraps).
+ */
 export function spawn(cmd: string, args: string[], opts: SpawnOpts = {}) {
   const {
     timeoutSec: timeout = 0,
@@ -242,7 +247,7 @@ export function spawn(cmd: string, args: string[], opts: SpawnOpts = {}) {
   } = opts
 
   const stdio = tty ? "inherit" : "pipe"
-  const proc = _spawn(cmd, args, { cwd, env, stdio })
+  const proc = _spawn(cmd, args, { cwd, env, stdio, windowsHide: true })
 
   const result: SpawnOutput = {
     code: 0,

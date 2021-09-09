@@ -47,7 +47,7 @@ describe("kubernetes build flow", () => {
     currentEnv = environmentName
     garden = await getContainerTestGarden(environmentName)
     log = garden.log
-    graph = await garden.getConfigGraph(garden.log)
+    graph = await garden.getConfigGraph({ log: garden.log, emit: false })
     provider = <KubernetesProvider>await garden.resolveProvider(garden.log, "local-kubernetes")
     ctx = await garden.getPluginContext(provider)
     systemNamespace = await getSystemNamespace(ctx, provider, garden.log)
@@ -152,7 +152,8 @@ describe("kubernetes build flow", () => {
     })
   })
 
-  grouped("cluster-docker").context("cluster-docker mode", () => {
+  // TODO: Reenable these tests e.g. for Minikube?
+  grouped("cluster-docker", "remote-only").context("cluster-docker mode", () => {
     before(async () => {
       await init("cluster-docker")
     })

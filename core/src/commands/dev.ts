@@ -92,14 +92,18 @@ export class DevCommand extends Command<DevCommandArgs, DevCommandOpts> {
   arguments = devArgs
   options = devOpts
 
+  private garden?: Garden
+
   printHeader({ headerLog }) {
     printHeader(headerLog, "Dev", "keyboard")
   }
 
   async prepare({ log, footerLog }: PrepareParams<DevCommandArgs, DevCommandOpts>) {
     // print ANSI banner image
-    const data = await readFile(ansiBannerPath)
-    log.info(data.toString())
+    if (chalk.supportsColor && chalk.supportsColor.level > 2) {
+      const data = await readFile(ansiBannerPath)
+      log.info(data.toString())
+    }
 
     log.info(chalk.gray.italic(`Good ${getGreetingTime()}! Let's get your environment wired up...`))
     log.info("")
@@ -109,16 +113,22 @@ export class DevCommand extends Command<DevCommandArgs, DevCommandOpts> {
     return { persistent: true }
   }
 
+  terminate() {
+    this.garden?.events.emit("_exit", {})
+  }
+
   async action({
     garden,
+    isWorkflowStepCommand,
     log,
     footerLog,
     args,
     opts,
   }: CommandParams<DevCommandArgs, DevCommandOpts>): Promise<CommandResult> {
+    this.garden = garden
     this.server?.setGarden(garden)
 
-    const graph = await garden.getConfigGraph(log)
+    const graph = await garden.getConfigGraph({ log, emit: !isWorkflowStepCommand })
     const modules = graph.getModules()
 
     const skipTests = opts["skip-tests"]
