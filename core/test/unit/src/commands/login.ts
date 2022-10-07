@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,23 +8,26 @@
 
 import { expect } from "chai"
 import td from "testdouble"
-import { expectError, getDataDir, cleanupAuthTokens, getLogMessages, makeCommandParams } from "../../../helpers"
-import { AuthRedirectServer } from "../../../../src/enterprise/auth"
+import { expectError, getDataDir, cleanupAuthTokens, makeCommandParams } from "../../../helpers"
+import { AuthRedirectServer } from "../../../../src/cloud/auth"
 
 import { LoginCommand } from "../../../../src/commands/login"
 import stripAnsi from "strip-ansi"
 import { makeDummyGarden } from "../../../../src/cli/cli"
 import { ClientAuthToken } from "../../../../src/db/entities/client-auth-token"
 import { dedent, randomString } from "../../../../src/util/string"
-import { EnterpriseApi } from "../../../../src/enterprise/api"
+import { CloudApi } from "../../../../src/cloud/api"
 import { LogLevel } from "../../../../src/logger/logger"
 import { gardenEnv } from "../../../../src/constants"
 import { EnterpriseApiError } from "../../../../src/exceptions"
+import { ensureConnected } from "../../../../src/db/connection"
+import { getLogMessages } from "../../../../src/util/testing"
 
 // In the tests below we stub out the auth redirect server but still emit the
 // token received event.
 describe("LoginCommand", () => {
   beforeEach(async () => {
+    await ensureConnected()
     await cleanupAuthTokens()
     td.replace(AuthRedirectServer.prototype, "start", async () => {})
     td.replace(AuthRedirectServer.prototype, "close", async () => {})
@@ -73,20 +76,18 @@ describe("LoginCommand", () => {
       commandInfo: { name: "foo", args: {}, opts: {} },
     })
 
-    await EnterpriseApi.saveAuthToken(garden.log, testToken)
-    td.replace(EnterpriseApi.prototype, "checkClientAuthToken", async () => true)
-    td.replace(EnterpriseApi.prototype, "startInterval", async () => {})
+    await CloudApi.saveAuthToken(garden.log, testToken)
+    td.replace(CloudApi.prototype, "checkClientAuthToken", async () => true)
+    td.replace(CloudApi.prototype, "startInterval", async () => {})
 
     await command.action(makeCommandParams({ garden, args: {}, opts: {} }))
 
     const savedToken = await ClientAuthToken.findOne()
     expect(savedToken).to.exist
-    expect(savedToken!.token).to.eql(testToken.token)
-    expect(savedToken!.refreshToken).to.eql(testToken.refreshToken)
 
     const logOutput = getLogMessages(garden.log, (entry) => entry.level === LogLevel.info).join("\n")
 
-    expect(logOutput).to.include("You're already logged in to Garden Enteprise.")
+    expect(logOutput).to.include("You're already logged in to Garden Enterprise.")
   })
 
   it("should log in if the project config uses secrets in project variables", async () => {
@@ -120,8 +121,7 @@ describe("LoginCommand", () => {
     const command = new LoginCommand()
     await expectError(
       () => command.action(makeCommandParams({ garden, args: {}, opts: {} })),
-      (err) =>
-        expect(stripAnsi(err.message)).to.match(/Project config is missing an enterprise domain and\/or a project ID./)
+      (err) => expect(stripAnsi(err.message)).to.match(/Project config is missing a cloud domain and\/or a project ID./)
     )
   })
 
@@ -139,9 +139,9 @@ describe("LoginCommand", () => {
       commandInfo: { name: "foo", args: {}, opts: {} },
     })
 
-    await EnterpriseApi.saveAuthToken(garden.log, testToken)
-    td.replace(EnterpriseApi.prototype, "checkClientAuthToken", async () => false)
-    td.replace(EnterpriseApi.prototype, "refreshToken", async () => {
+    await CloudApi.saveAuthToken(garden.log, testToken)
+    td.replace(CloudApi.prototype, "checkClientAuthToken", async () => false)
+    td.replace(CloudApi.prototype, "refreshToken", async () => {
       throw new Error("bummer")
     })
 
@@ -170,9 +170,9 @@ describe("LoginCommand", () => {
       commandInfo: { name: "foo", args: {}, opts: {} },
     })
 
-    await EnterpriseApi.saveAuthToken(garden.log, testToken)
-    td.replace(EnterpriseApi.prototype, "checkClientAuthToken", async () => false)
-    td.replace(EnterpriseApi.prototype, "refreshToken", async () => {
+    await CloudApi.saveAuthToken(garden.log, testToken)
+    td.replace(CloudApi.prototype, "checkClientAuthToken", async () => false)
+    td.replace(CloudApi.prototype, "refreshToken", async () => {
       throw new EnterpriseApiError("bummer", { statusCode: 401 })
     })
 
@@ -207,13 +207,13 @@ describe("LoginCommand", () => {
         commandInfo: { name: "foo", args: {}, opts: {} },
       })
 
-      td.replace(EnterpriseApi.prototype, "checkClientAuthToken", async () => true)
+      td.replace(CloudApi.prototype, "checkClientAuthToken", async () => true)
 
       await command.action(makeCommandParams({ garden, args: {}, opts: {} }))
 
       const logOutput = getLogMessages(garden.log, (entry) => entry.level === LogLevel.info).join("\n")
 
-      expect(logOutput).to.include("You're already logged in to Garden Enteprise.")
+      expect(logOutput).to.include("You're already logged in to Garden Enterprise.")
     })
 
     it("should throw if the user has an invalid auth token in the environment", async () => {
@@ -223,7 +223,7 @@ describe("LoginCommand", () => {
         commandInfo: { name: "foo", args: {}, opts: {} },
       })
 
-      td.replace(EnterpriseApi.prototype, "checkClientAuthToken", async () => false)
+      td.replace(CloudApi.prototype, "checkClientAuthToken", async () => false)
 
       await expectError(
         () => command.action(makeCommandParams({ garden, args: {}, opts: {} })),

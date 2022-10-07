@@ -7,15 +7,15 @@ tocTitle: "`kubernetes`"
 
 ## Description
 
-The `kubernetes` provider allows you to deploy [`container` modules](https://docs.garden.io/reference/module-types/container) to
-Kubernetes clusters, and adds the [`helm`](https://docs.garden.io/reference/module-types/helm) and
-[`kubernetes`](https://docs.garden.io/reference/module-types/kubernetes) module types.
+The `kubernetes` provider allows you to deploy [`container` modules](../module-types/container.md) to
+Kubernetes clusters, and adds the [`helm`](../module-types/helm.md) and
+[`kubernetes`](../module-types/kubernetes.md) module types.
 
 For usage information, please refer to the [guides section](https://docs.garden.io/guides). A good place to start is
-the [Remote Kubernetes guide](https://docs.garden.io/guides/remote-kubernetes) guide if you're connecting to remote clusters.
-The [Getting Started](https://docs.garden.io/getting-started/0-introduction) guide is also helpful as an introduction.
+the [Remote Kubernetes guide](../../guides/remote-kubernetes.md) guide if you're connecting to remote clusters.
+The [Getting Started](../../getting-started/0-introduction.md) guide is also helpful as an introduction.
 
-Note that if you're using a local Kubernetes cluster (e.g. minikube or Docker Desktop), the [local-kubernetes provider](https://docs.garden.io/reference/providers/local-kubernetes) simplifies (and automates) the configuration and setup quite a bit.
+Note that if you're using a local Kubernetes cluster (e.g. minikube or Docker Desktop), the [local-kubernetes provider](./local-kubernetes.md) simplifies (and automates) the configuration and setup quite a bit.
 
 Below is the full schema reference for the provider configuration. For an introduction to configuring a Garden project with providers, please look at our [configuration guide](../../using-garden/configuration-overview.md).
 
@@ -46,7 +46,122 @@ providers:
     buildMode: local-docker
 
     # Configuration options for the `cluster-buildkit` build mode.
-    clusterBuildkit:
+    clusterBuildkit: {}
+      # Use the `cache` configuration to customize the default cluster-buildkit cache behaviour.
+      #
+      # The default value is:
+      # clusterBuildkit:
+      #   cache:
+      #     - type: registry
+      #       mode: auto
+      #
+      # For every build, this will
+      # - import cached layers from a docker image tag named `_buildcache`
+      # - when the build is finished, upload cache information to `_buildcache`
+      #
+      # For registries that support it, `mode: auto` (the default) will enable the buildkit `mode=max`
+      # option.
+      #
+      # Some registries are known not to support the cache manifests needed for the `mode=max` option, so
+      # we will avoid using `mode=max` with them.
+      #
+      # See the following table for details on our detection mechanism:
+      #
+      # | Registry Name                   | Detection string | Assumed `mode=max` support |
+      # |---------------------------------|------------------|------------------------------|
+      # | AWS Elastic Container Registry  | `.dkr.ecr.`    | No                           |
+      # | Google Cloud Container Registry | `gcr.io`       | No                           |
+      # | Any other registry              | -                | Yes                          |
+      #
+      # In case you need to override the defaults for your registry, you can do it like so:
+      #
+      # clusterBuildkit:
+      #   cache:
+      #     - type: registry
+      #       mode: inline
+      #
+      # When you add multiple caches, we will make sure to pass the `--import-cache` options to buildkit in the same
+      # order as provided in the cache configuration. This is because buildkit will not actually use all imported
+      # caches
+      # for every build, but it will stick with the first cache that yields a cache hit for all the following layers.
+      #
+      # An example for this is the following:
+      #
+      # clusterBuildkit:
+      #   cache:
+      #     - type: registry
+      #       tag: _buildcache-${slice(kebabCase(git.branch), "0", "30")}
+      #     - type: registry
+      #       tag: _buildcache-main
+      #       export: false
+      #
+      # Using this cache configuration, every build will first look for a cache specific to your feature branch.
+      # If it does not exist yet, it will import caches from the main branch builds (`_buildcache-main`).
+      # When the build is finished, it will only export caches to your feature branch, and avoid polluting the `main`
+      # branch caches.
+      # A configuration like that may improve your cache hit rate and thus save time.
+      #
+      # If you need to disable caches completely you can achieve that with the following configuration:
+      #
+      # clusterBuildkit:
+      #   cache: []
+      cache:
+        - # Use the Docker registry configured at `deploymentRegistry` to retrieve and store buildkit cache
+          # information.
+          #
+          # See also the [buildkit registry cache
+          # documentation](https://github.com/moby/buildkit#registry-push-image-and-cache-separately)
+          type:
+
+          # The registry from which the cache should be imported from, or which it should be exported to.
+          #
+          # If not specified, use the configured `deploymentRegistry` in your kubernetes provider config, or the
+          # internal in-cluster registry in case `deploymentRegistry` is not set.
+          #
+          # Important: You must make sure `imagePullSecrets` includes authentication with the specified cache
+          # registry, that has the appropriate write privileges (usually full write access to the configured
+          # `namespace`).
+          registry:
+            # The hostname (and optionally port, if not the default port) of the registry.
+            hostname:
+
+            # The port where the registry listens on, if not the default.
+            port:
+
+            # The registry namespace. Will be placed between hostname and image name, like so:
+            # <hostname>/<namespace>/<image name>
+            namespace: _
+
+            # Set to true to allow insecure connections to the registry (without SSL).
+            insecure: false
+
+          # This is the buildkit cache mode to be used.
+          #
+          # The value `inline` ensures that garden is using the buildkit option `--export-cache inline`. Cache
+          # information will be inlined and co-located with the Docker image itself.
+          #
+          # The values `min` and `max` ensure that garden passes the `mode=max` or `mode=min` modifiers to the
+          # buildkit `--export-cache` option. Cache manifests will only be
+          # stored stored in the configured `tag`.
+          #
+          # `auto` is the same as `max` for most registries. Some popular registries do not support `max` and garden
+          # will fall back to `inline` for them.
+          #  See the [clusterBuildkit cache option](#providers-.clusterbuildkit.cache) for a description of the
+          # detection mechanism.
+          #
+          # See also the [buildkit export cache documentation](https://github.com/moby/buildkit#export-cache)
+          mode: auto
+
+          # This is the Docker registry tag name buildkit should use for the registry build cache. Default is
+          # `_buildcache`
+          #
+          # **NOTE**: `tag` can only be used together with the `registry` cache type
+          tag: _buildcache
+
+          # If this is false, only pass the `--import-cache` option to buildkit, and not the `--export-cache` option.
+          # Defaults to true.
+          export: true
+
       # Enable rootless mode for the cluster-buildkit daemon, which runs the daemon with decreased privileges.
       # Please see [the buildkit docs](https://github.com/moby/buildkit/blob/master/docs/rootless.md) for caveats when
       # using this mode.
@@ -59,6 +174,14 @@ providers:
       # guide to assigning Pods to nodes.
       nodeSelector: {}
 
+    # Setting related to Jib image builds.
+    jib:
+      # In some cases you may need to push images built with Jib to the remote registry via Kubernetes cluster, e.g.
+      # if you don't have connectivity or access from where Garden is being run. In that case, set this flag to true,
+      # but do note that the build will take considerably take longer to complete! Only applies when using in-cluster
+      # building.
+      pushViaCluster: false
+
     # Configuration options for the `kaniko` build mode.
     kaniko:
       # Specify extra flags to use when building the container image with kaniko. Flags set on `container` modules
@@ -66,7 +189,7 @@ providers:
       extraFlags:
 
       # Change the kaniko image (repository/image:tag) to use when building in kaniko mode.
-      image: 'gcr.io/kaniko-project/executor:v1.6.0-debug'
+      image: 'gcr.io/kaniko-project/executor:v1.8.1-debug'
 
       # Choose the namespace where the Kaniko pods will be run. Set to `null` to use the project namespace.
       #
@@ -111,10 +234,55 @@ providers:
     # A default hostname to use when no hostname is explicitly configured for a service.
     defaultHostname:
 
-    # Defines the strategy for deploying the project services.
-    # Default is "rolling update" and there is experimental support for "blue/green" deployment.
-    # The feature only supports modules of type `container`: other types will just deploy using the default strategy.
+    # Sets the deployment strategy for `container` services.
+    #
+    # The default is `"rolling"`, which performs rolling updates. There is also experimental support for blue/green
+    # deployments (via the `"blue-green"` strategy).
+    #
+    # Note that this setting only applies to `container` services (and not, for example,  `kubernetes` or `helm`
+    # services).
     deploymentStrategy: rolling
+
+    # Configuration options for dev mode.
+    devMode:
+      # Specifies default settings for dev mode syncs (e.g. for `container`, `kubernetes` and `helm` services).
+      #
+      # These are overridden/extended by the settings of any individual dev mode sync specs for a given module or
+      # service.
+      #
+      # Dev mode is enabled when running the `garden dev` command, and by setting the `--dev` flag on the `garden
+      # deploy` command.
+      #
+      # See the [Code Synchronization guide](https://docs.garden.io/guides/code-synchronization-dev-mode) for more
+      # information.
+      defaults:
+        # Specify a list of POSIX-style paths or glob patterns that should be excluded from the sync.
+        #
+        # Any exclusion patterns defined in individual dev mode sync specs will be applied in addition to these
+        # patterns.
+        #
+        # `.git` directories and `.garden` directories are always ignored.
+        exclude:
+
+        # The default permission bits, specified as an octal, to set on files at the sync target. Defaults to 0600
+        # (user read/write). See the [Mutagen
+        # docs](https://mutagen.io/documentation/synchronization/permissions#permissions) for more information.
+        fileMode:
+
+        # The default permission bits, specified as an octal, to set on directories at the sync target. Defaults to
+        # 0700 (user read/write). See the [Mutagen
+        # docs](https://mutagen.io/documentation/synchronization/permissions#permissions) for more information.
+        directoryMode:
+
+        # Set the default owner of files and directories at the target. Specify either an integer ID or a string name.
+        # See the [Mutagen docs](https://mutagen.io/documentation/synchronization/permissions#owners-and-groups) for
+        # more information.
+        owner:
+
+        # Set the default group on files and directories at the target. Specify either an integer ID or a string name.
+        # See the [Mutagen docs](https://mutagen.io/documentation/synchronization/permissions#owners-and-groups) for
+        # more information.
+        group:
 
     # Require SSL on all `container` module services. If set to true, an error is raised when no certificate is
     # available for a configured hostname on a `container` module.
@@ -124,6 +292,16 @@ providers:
     # images. This is necessary if you reference private images in your module configuration, and is required
     # when configuring a remote Kubernetes environment with buildMode=local.
     imagePullSecrets:
+      - # The name of the Kubernetes secret.
+        name:
+
+        # The namespace where the secret is stored. If necessary, the secret may be copied to the appropriate
+        # namespace before use.
+        namespace: default
+
+    # References to secrets you need to have copied into all namespaces deployed to. These secrets will be
+    # ensured to exist in the namespace before deploying any service.
+    copySecrets:
       - # The name of the Kubernetes secret.
         name:
 
@@ -311,8 +489,12 @@ providers:
       # The port where the registry listens on, if not the default.
       port:
 
-      # The namespace in the registry where images should be pushed.
+      # The registry namespace. Will be placed between hostname and image name, like so: <hostname>/<namespace>/<image
+      # name>
       namespace: _
+
+      # Set to true to allow insecure connections to the registry (without SSL).
+      insecure: false
 
     # The ingress class to use on configured Ingresses (via the `kubernetes.io/ingress.class` annotation)
     # when deploying `container` services. Use this if you have multiple ingress controllers in your cluster.
@@ -324,8 +506,17 @@ providers:
     # The external HTTPS port of the cluster's ingress controller.
     ingressHttpsPort: 443
 
-    # Path to kubeconfig file to use instead of the system default. Must be a POSIX-style path.
+    # Path to kubeconfig file to use instead of the system default.
     kubeconfig:
+
+    # Set a specific path to a kubectl binary, instead of having Garden download it automatically as required.
+    #
+    # It may be useful in some scenarios to allow individual users to set this, e.g. with an environment variable. You
+    # could configure that with something like `kubectlPath: ${local.env.GARDEN_KUBECTL_PATH}?`.
+    #
+    # **Warning**: Garden may make some assumptions with respect to the kubectl version, so it is suggested to only
+    # use this when necessary.
+    kubectlPath:
 
     # Specify which namespace to deploy services to, and optionally annotations/labels to apply to the namespace.
     #
@@ -405,9 +596,9 @@ For more details on all the different options and what makes sense to use for yo
 
 **Note:** The `cluster-docker` mode has been deprecated and will be removed in a future release!
 
-| Type     | Default          | Required |
-| -------- | ---------------- | -------- |
-| `string` | `"local-docker"` | No       |
+| Type     | Allowed Values                                                 | Default          | Required |
+| -------- | -------------------------------------------------------------- | ---------------- | -------- |
+| `string` | "local-docker", "cluster-docker", "kaniko", "cluster-buildkit" | `"local-docker"` | Yes      |
 
 ### `providers[].clusterBuildkit`
 
@@ -415,9 +606,214 @@ For more details on all the different options and what makes sense to use for yo
 
 Configuration options for the `cluster-buildkit` build mode.
 
+| Type     | Default | Required |
+| -------- | ------- | -------- |
+| `object` | `{}`    | No       |
+
+### `providers[].clusterBuildkit.cache[]`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > cache
+
+Use the `cache` configuration to customize the default cluster-buildkit cache behaviour.
+
+The default value is:
+```yaml
+clusterBuildkit:
+  cache:
+    - type: registry
+      mode: auto
+```
+
+For every build, this will
+- import cached layers from a docker image tag named `_buildcache`
+- when the build is finished, upload cache information to `_buildcache`
+
+For registries that support it, `mode: auto` (the default) will enable the buildkit `mode=max`
+option.
+
+Some registries are known not to support the cache manifests needed for the `mode=max` option, so
+we will avoid using `mode=max` with them.
+
+See the following table for details on our detection mechanism:
+
+| Registry Name                   | Detection string | Assumed `mode=max` support |
+|---------------------------------|------------------|------------------------------|
+| AWS Elastic Container Registry  | `.dkr.ecr.`    | No                           |
+| Google Cloud Container Registry | `gcr.io`       | No                           |
+| Any other registry              | -                | Yes                          |
+
+In case you need to override the defaults for your registry, you can do it like so:
+
+```yaml
+clusterBuildkit:
+  cache:
+    - type: registry
+      mode: inline
+```
+
+When you add multiple caches, we will make sure to pass the `--import-cache` options to buildkit in the same
+order as provided in the cache configuration. This is because buildkit will not actually use all imported caches
+for every build, but it will stick with the first cache that yields a cache hit for all the following layers.
+
+An example for this is the following:
+
+```yaml
+clusterBuildkit:
+  cache:
+    - type: registry
+      tag: _buildcache-${slice(kebabCase(git.branch), "0", "30")}
+    - type: registry
+      tag: _buildcache-main
+      export: false
+```
+
+Using this cache configuration, every build will first look for a cache specific to your feature branch.
+If it does not exist yet, it will import caches from the main branch builds (`_buildcache-main`).
+When the build is finished, it will only export caches to your feature branch, and avoid polluting the `main` branch caches.
+A configuration like that may improve your cache hit rate and thus save time.
+
+If you need to disable caches completely you can achieve that with the following configuration:
+
+```yaml
+clusterBuildkit:
+  cache: []
+```
+
+| Type            | Default                                                                 | Required |
+| --------------- | ----------------------------------------------------------------------- | -------- |
+| `array[object]` | `[{"type":"registry","mode":"auto","tag":"_buildcache","export":true}]` | No       |
+
+### `providers[].clusterBuildkit.cache[].type`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > [cache](#providersclusterbuildkitcache) > type
+
+Use the Docker registry configured at `deploymentRegistry` to retrieve and store buildkit cache information.
+
+See also the [buildkit registry cache documentation](https://github.com/moby/buildkit#registry-push-image-and-cache-separately)
+
+| Type     | Allowed Values | Required |
+| -------- | -------------- | -------- |
+| `string` | "registry"     | Yes      |
+
+### `providers[].clusterBuildkit.cache[].registry`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > [cache](#providersclusterbuildkitcache) > registry
+
+The registry from which the cache should be imported from, or which it should be exported to.
+
+If not specified, use the configured `deploymentRegistry` in your kubernetes provider config, or the internal in-cluster registry in case `deploymentRegistry` is not set.
+
+Important: You must make sure `imagePullSecrets` includes authentication with the specified cache registry, that has the appropriate write privileges (usually full write access to the configured `namespace`).
+
 | Type     | Required |
 | -------- | -------- |
 | `object` | No       |
+
+### `providers[].clusterBuildkit.cache[].registry.hostname`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > [cache](#providersclusterbuildkitcache) > [registry](#providersclusterbuildkitcacheregistry) > hostname
+
+The hostname (and optionally port, if not the default port) of the registry.
+
+| Type     | Required |
+| -------- | -------- |
+| `string` | Yes      |
+
+Example:
+
+```yaml
+providers:
+  - clusterBuildkit:
+      ...
+      cache:
+        - registry:
+            ...
+            hostname: "gcr.io"
+```
+
+### `providers[].clusterBuildkit.cache[].registry.port`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > [cache](#providersclusterbuildkitcache) > [registry](#providersclusterbuildkitcacheregistry) > port
+
+The port where the registry listens on, if not the default.
+
+| Type     | Required |
+| -------- | -------- |
+| `number` | No       |
+
+### `providers[].clusterBuildkit.cache[].registry.namespace`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > [cache](#providersclusterbuildkitcache) > [registry](#providersclusterbuildkitcacheregistry) > namespace
+
+The registry namespace. Will be placed between hostname and image name, like so: <hostname>/<namespace>/<image name>
+
+| Type     | Default | Required |
+| -------- | ------- | -------- |
+| `string` | `"_"`   | No       |
+
+Example:
+
+```yaml
+providers:
+  - clusterBuildkit:
+      ...
+      cache:
+        - registry:
+            ...
+            namespace: "my-project"
+```
+
+### `providers[].clusterBuildkit.cache[].registry.insecure`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > [cache](#providersclusterbuildkitcache) > [registry](#providersclusterbuildkitcacheregistry) > insecure
+
+Set to true to allow insecure connections to the registry (without SSL).
+
+| Type      | Default | Required |
+| --------- | ------- | -------- |
+| `boolean` | `false` | No       |
+
+### `providers[].clusterBuildkit.cache[].mode`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > [cache](#providersclusterbuildkitcache) > mode
+
+This is the buildkit cache mode to be used.
+
+The value `inline` ensures that garden is using the buildkit option `--export-cache inline`. Cache information will be inlined and co-located with the Docker image itself.
+
+The values `min` and `max` ensure that garden passes the `mode=max` or `mode=min` modifiers to the buildkit `--export-cache` option. Cache manifests will only be
+stored stored in the configured `tag`.
+
+`auto` is the same as `max` for most registries. Some popular registries do not support `max` and garden will fall back to `inline` for them.
+ See the [clusterBuildkit cache option](#providers-.clusterbuildkit.cache) for a description of the detection mechanism.
+
+See also the [buildkit export cache documentation](https://github.com/moby/buildkit#export-cache)
+
+| Type     | Allowed Values                 | Default  | Required |
+| -------- | ------------------------------ | -------- | -------- |
+| `string` | "auto", "min", "max", "inline" | `"auto"` | Yes      |
+
+### `providers[].clusterBuildkit.cache[].tag`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > [cache](#providersclusterbuildkitcache) > tag
+
+This is the Docker registry tag name buildkit should use for the registry build cache. Default is `_buildcache`
+
+**NOTE**: `tag` can only be used together with the `registry` cache type
+
+| Type     | Default         | Required |
+| -------- | --------------- | -------- |
+| `string` | `"_buildcache"` | No       |
+
+### `providers[].clusterBuildkit.cache[].export`
+
+[providers](#providers) > [clusterBuildkit](#providersclusterbuildkit) > [cache](#providersclusterbuildkitcache) > export
+
+If this is false, only pass the `--import-cache` option to buildkit, and not the `--export-cache` option. Defaults to true.
+
+| Type      | Default | Required |
+| --------- | ------- | -------- |
+| `boolean` | `true`  | No       |
 
 ### `providers[].clusterBuildkit.rootless`
 
@@ -462,9 +858,9 @@ providers:
 
 Configuration options for the `cluster-docker` build mode.
 
-| Type     | Required |
-| -------- | -------- |
-| `object` | No       |
+| Type     | Default | Required |
+| -------- | ------- | -------- |
+| `object` | `{}`    | No       |
 
 ### `providers[].clusterDocker.enableBuildKit`
 
@@ -475,6 +871,26 @@ Configuration options for the `cluster-docker` build mode.
 {% endhint %}
 
 Enable [BuildKit](https://github.com/moby/buildkit) support. This should in most cases work well and be more performant, but we're opting to keep it optional until it's enabled by default in Docker.
+
+| Type      | Default | Required |
+| --------- | ------- | -------- |
+| `boolean` | `false` | No       |
+
+### `providers[].jib`
+
+[providers](#providers) > jib
+
+Setting related to Jib image builds.
+
+| Type     | Required |
+| -------- | -------- |
+| `object` | No       |
+
+### `providers[].jib.pushViaCluster`
+
+[providers](#providers) > [jib](#providersjib) > pushViaCluster
+
+In some cases you may need to push images built with Jib to the remote registry via Kubernetes cluster, e.g. if you don't have connectivity or access from where Garden is being run. In that case, set this flag to true, but do note that the build will take considerably take longer to complete! Only applies when using in-cluster building.
 
 | Type      | Default | Required |
 | --------- | ------- | -------- |
@@ -508,7 +924,7 @@ Change the kaniko image (repository/image:tag) to use when building in kaniko mo
 
 | Type     | Default                                         | Required |
 | -------- | ----------------------------------------------- | -------- |
-| `string` | `"gcr.io/kaniko-project/executor:v1.6.0-debug"` | No       |
+| `string` | `"gcr.io/kaniko-project/executor:v1.8.1-debug"` | No       |
 
 ### `providers[].kaniko.namespace`
 
@@ -627,13 +1043,108 @@ providers:
 **Experimental**: this is an experimental feature and the API might change in the future.
 {% endhint %}
 
-Defines the strategy for deploying the project services.
-Default is "rolling update" and there is experimental support for "blue/green" deployment.
-The feature only supports modules of type `container`: other types will just deploy using the default strategy.
+Sets the deployment strategy for `container` services.
+
+The default is `"rolling"`, which performs rolling updates. There is also experimental support for blue/green deployments (via the `"blue-green"` strategy).
+
+Note that this setting only applies to `container` services (and not, for example,  `kubernetes` or `helm` services).
 
 | Type     | Default     | Required |
 | -------- | ----------- | -------- |
 | `string` | `"rolling"` | No       |
+
+### `providers[].devMode`
+
+[providers](#providers) > devMode
+
+Configuration options for dev mode.
+
+| Type     | Required |
+| -------- | -------- |
+| `object` | No       |
+
+### `providers[].devMode.defaults`
+
+[providers](#providers) > [devMode](#providersdevmode) > defaults
+
+Specifies default settings for dev mode syncs (e.g. for `container`, `kubernetes` and `helm` services).
+
+These are overridden/extended by the settings of any individual dev mode sync specs for a given module or service.
+
+Dev mode is enabled when running the `garden dev` command, and by setting the `--dev` flag on the `garden deploy` command.
+
+See the [Code Synchronization guide](https://docs.garden.io/guides/code-synchronization-dev-mode) for more information.
+
+| Type     | Required |
+| -------- | -------- |
+| `object` | No       |
+
+### `providers[].devMode.defaults.exclude[]`
+
+[providers](#providers) > [devMode](#providersdevmode) > [defaults](#providersdevmodedefaults) > exclude
+
+Specify a list of POSIX-style paths or glob patterns that should be excluded from the sync.
+
+Any exclusion patterns defined in individual dev mode sync specs will be applied in addition to these patterns.
+
+`.git` directories and `.garden` directories are always ignored.
+
+| Type               | Required |
+| ------------------ | -------- |
+| `array[posixPath]` | No       |
+
+Example:
+
+```yaml
+providers:
+  - devMode:
+      ...
+      defaults:
+        ...
+        exclude:
+          - dist/**/*
+          - '*.log'
+```
+
+### `providers[].devMode.defaults.fileMode`
+
+[providers](#providers) > [devMode](#providersdevmode) > [defaults](#providersdevmodedefaults) > fileMode
+
+The default permission bits, specified as an octal, to set on files at the sync target. Defaults to 0600 (user read/write). See the [Mutagen docs](https://mutagen.io/documentation/synchronization/permissions#permissions) for more information.
+
+| Type     | Required |
+| -------- | -------- |
+| `number` | No       |
+
+### `providers[].devMode.defaults.directoryMode`
+
+[providers](#providers) > [devMode](#providersdevmode) > [defaults](#providersdevmodedefaults) > directoryMode
+
+The default permission bits, specified as an octal, to set on directories at the sync target. Defaults to 0700 (user read/write). See the [Mutagen docs](https://mutagen.io/documentation/synchronization/permissions#permissions) for more information.
+
+| Type     | Required |
+| -------- | -------- |
+| `number` | No       |
+
+### `providers[].devMode.defaults.owner`
+
+[providers](#providers) > [devMode](#providersdevmode) > [defaults](#providersdevmodedefaults) > owner
+
+Set the default owner of files and directories at the target. Specify either an integer ID or a string name. See the [Mutagen docs](https://mutagen.io/documentation/synchronization/permissions#owners-and-groups) for more information.
+
+| Type               | Required |
+| ------------------ | -------- |
+| `number \| string` | No       |
+
+### `providers[].devMode.defaults.group`
+
+[providers](#providers) > [devMode](#providersdevmode) > [defaults](#providersdevmodedefaults) > group
+
+Set the default group on files and directories at the target. Specify either an integer ID or a string name. See the [Mutagen docs](https://mutagen.io/documentation/synchronization/permissions#owners-and-groups) for more information.
+
+| Type               | Required |
+| ------------------ | -------- |
+| `number \| string` | No       |
 
 ### `providers[].forceSsl`
 
@@ -678,6 +1189,45 @@ providers:
 ### `providers[].imagePullSecrets[].namespace`
 
 [providers](#providers) > [imagePullSecrets](#providersimagepullsecrets) > namespace
+
+The namespace where the secret is stored. If necessary, the secret may be copied to the appropriate namespace before use.
+
+| Type     | Default     | Required |
+| -------- | ----------- | -------- |
+| `string` | `"default"` | No       |
+
+### `providers[].copySecrets[]`
+
+[providers](#providers) > copySecrets
+
+References to secrets you need to have copied into all namespaces deployed to. These secrets will be
+ensured to exist in the namespace before deploying any service.
+
+| Type            | Default | Required |
+| --------------- | ------- | -------- |
+| `array[object]` | `[]`    | No       |
+
+### `providers[].copySecrets[].name`
+
+[providers](#providers) > [copySecrets](#providerscopysecrets) > name
+
+The name of the Kubernetes secret.
+
+| Type     | Required |
+| -------- | -------- |
+| `string` | Yes      |
+
+Example:
+
+```yaml
+providers:
+  - copySecrets:
+      - name: "my-secret"
+```
+
+### `providers[].copySecrets[].namespace`
+
+[providers](#providers) > [copySecrets](#providerscopysecrets) > namespace
 
 The namespace where the secret is stored. If necessary, the secret may be copied to the appropriate namespace before use.
 
@@ -1794,7 +2344,7 @@ The port where the registry listens on, if not the default.
 
 [providers](#providers) > [deploymentRegistry](#providersdeploymentregistry) > namespace
 
-The namespace in the registry where images should be pushed.
+The registry namespace. Will be placed between hostname and image name, like so: <hostname>/<namespace>/<image name>
 
 | Type     | Default | Required |
 | -------- | ------- | -------- |
@@ -1808,6 +2358,16 @@ providers:
       ...
       namespace: "my-project"
 ```
+
+### `providers[].deploymentRegistry.insecure`
+
+[providers](#providers) > [deploymentRegistry](#providersdeploymentregistry) > insecure
+
+Set to true to allow insecure connections to the registry (without SSL).
+
+| Type      | Default | Required |
+| --------- | ------- | -------- |
+| `boolean` | `false` | No       |
 
 ### `providers[].ingressClass`
 
@@ -1844,11 +2404,25 @@ The external HTTPS port of the cluster's ingress controller.
 
 [providers](#providers) > kubeconfig
 
-Path to kubeconfig file to use instead of the system default. Must be a POSIX-style path.
+Path to kubeconfig file to use instead of the system default.
 
-| Type        | Required |
-| ----------- | -------- |
-| `posixPath` | No       |
+| Type     | Required |
+| -------- | -------- |
+| `string` | No       |
+
+### `providers[].kubectlPath`
+
+[providers](#providers) > kubectlPath
+
+Set a specific path to a kubectl binary, instead of having Garden download it automatically as required.
+
+It may be useful in some scenarios to allow individual users to set this, e.g. with an environment variable. You could configure that with something like `kubectlPath: ${local.env.GARDEN_KUBECTL_PATH}?`.
+
+**Warning**: Garden may make some assumptions with respect to the kubectl version, so it is suggested to only use this when necessary.
+
+| Type     | Required |
+| -------- | -------- |
+| `string` | No       |
 
 ### `providers[].namespace`
 
@@ -1860,9 +2434,9 @@ You can specify a string as a shorthand for `name: <name>`. Defaults to `<projec
 
 Note that the framework may generate other namespaces as well with this name as a prefix. Also note that if the namespace previously exists, Garden will attempt to add the specified labels and annotations. If the user does not have permissions to do so, a warning is shown.
 
-| Type              | Required |
-| ----------------- | -------- |
-| `object | string` | No       |
+| Type               | Required |
+| ------------------ | -------- |
+| `object \| string` | No       |
 
 ### `providers[].namespace.name`
 

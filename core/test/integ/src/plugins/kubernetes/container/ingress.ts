@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -59,10 +59,12 @@ const basicConfig: PartialConfig = {
     hostname: "foo.garden",
     port: 5000,
     namespace: "boo",
+    insecure: true,
   },
   forceSsl: false,
   gardenSystemNamespace: defaultSystemNamespace,
   imagePullSecrets: [],
+  copySecrets: [],
   ingressClass: "nginx",
   ingressHttpPort: 80,
   ingressHttpsPort: 443,
@@ -475,7 +477,7 @@ describe("createIngressResources", () => {
 
     if (ingress.apiVersion === "networking.k8s.io/v1") {
       expect(ingress.spec.ingressClassName).to.equal("nginx")
-      expect(ingress.metadata.annotations?.["kubernetes.io/ingress.class"]).to.be.empty
+      expect(ingress.metadata.annotations?.["kubernetes.io/ingress.class"]).to.be.undefined
       expect(ingress.spec.rules).to.eql([
         {
           host: "my.domain.com",
@@ -483,7 +485,7 @@ describe("createIngressResources", () => {
             paths: [
               {
                 path: "/",
-                pathType: "prefix",
+                pathType: "Prefix",
                 backend: {
                   service: {
                     name: "my-service",

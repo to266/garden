@@ -1,17 +1,18 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { cloneDeep, keyBy } from "lodash"
+import { cloneDeep, isArray, isString, keyBy } from "lodash"
 import { validateWithPath } from "./config/validation"
 import {
   resolveTemplateStrings,
   getModuleTemplateReferences,
   resolveTemplateString,
+  mayContainTemplateString,
 } from "./template-string/template-string"
 import { ContextResolveOpts, GenericContext } from "./config/template-contexts/base"
 import { relative, resolve, posix, dirname } from "path"
@@ -23,6 +24,7 @@ import { getModuleTypeBases } from "./plugins"
 import { ModuleConfig, moduleConfigSchema } from "./config/module"
 import { Profile } from "./util/profiling"
 import { getLinkedSources } from "./util/ext-source-util"
+import { allowUnknown, DeepPrimitiveMap } from "./config/common"
 import { ProviderMap } from "./config/provider"
 import { RuntimeContext } from "./runtime-context"
 import chalk from "chalk"
@@ -32,9 +34,13 @@ import { readFile, mkdirp, writeFile } from "fs-extra"
 import { LogEntry } from "./logger/log-entry"
 import { ModuleConfigContext, ModuleConfigContextParams } from "./config/template-contexts/module"
 import { pathToCacheContext } from "./cache"
+import { loadVarfile } from "./config/base"
+import { merge } from "json-merge-patch"
+import { prepareBuildDependencies } from "./config/base"
+import { ModuleTypeDefinition, ModuleTypeMap } from "./types/plugin/plugin"
 
 // This limit is fairly arbitrary, but we need to have some cap on concurrent processing.
-export const moduleResolutionConcurrencyLimit = 40
+export const moduleResolutionConcurrencyLimit = 50
 
 /**
  * Resolves a set of module configurations in dependency order.
@@ -47,10 +53,10 @@ export const moduleResolutionConcurrencyLimit = 40
 export class ModuleResolver {
   private garden: Garden
   private log: LogEntry
-  private rawConfigs: ModuleConfig[]
-  private rawConfigsByName: ModuleConfigMap
+  private rawConfigsByKey: ModuleConfigMap
   private resolvedProviders: ProviderMap
   private runtimeContext?: RuntimeContext
+  private bases: { [type: string]: ModuleTypeDefinition[] }
 
   constructor({
     garden,
@@ -67,10 +73,10 @@ export class ModuleResolver {
   }) {
     this.garden = garden
     this.log = log
-    this.rawConfigs = rawConfigs
-    this.rawConfigsByName = keyBy(rawConfigs, "name")
+    this.rawConfigsByKey = keyBy(rawConfigs, (c) => getModuleKey(c.name, c.plugin))
     this.resolvedProviders = resolvedProviders
     this.runtimeContext = runtimeContext
+    this.bases = {}
   }
 
   async resolveAll() {
@@ -80,18 +86,19 @@ export class ModuleResolver {
     const fullGraph = new DependencyValidationGraph()
     const processingGraph = new DependencyValidationGraph()
 
-    for (const rawConfig of this.rawConfigs) {
+    for (const key of Object.keys(this.rawConfigsByKey)) {
       for (const graph of [fullGraph, processingGraph]) {
-        graph.addNode(rawConfig.name)
+        graph.addNode(key)
       }
     }
-    for (const rawConfig of this.rawConfigs) {
-      const buildPath = await this.garden.buildStaging.buildPath(rawConfig)
-      const deps = this.getModuleDependenciesFromTemplateStrings(rawConfig, buildPath)
+    for (const [key, rawConfig] of Object.entries(this.rawConfigsByKey)) {
+      const buildPath = this.garden.buildStaging.getBuildPath(rawConfig)
+      const deps = this.getModuleDependenciesFromConfig(rawConfig, buildPath)
       for (const graph of [fullGraph, processingGraph]) {
         for (const dep of deps) {
-          graph.addNode(dep.name)
-          graph.addDependency(rawConfig.name, dep.name)
+          const depKey = getModuleKey(dep.name, dep.plugin)
+          graph.addNode(depKey)
+          graph.addDependency(key, depKey)
         }
       }
     }
@@ -100,13 +107,93 @@ export class ModuleResolver {
     const resolvedModules: ModuleMap = {}
     const errors: { [moduleName: string]: Error } = {}
 
-    // Iterate through dependency graph, a batch of leaves at a time. While there are items remaining:
-    while (processingGraph.size() > 0) {
+    const inFlight = new Set<string>()
+
+    const processNode = async (moduleKey: string) => {
+      if (inFlight.has(moduleKey)) {
+        return
+      }
+
+      this.log.silly(`ModuleResolver: Process node ${moduleKey}`)
+      inFlight.add(moduleKey)
+
+      // Resolve configuration, unless previously resolved.
+      let resolvedConfig = resolvedConfigs[moduleKey]
+      let foundNewDependency = false
+
+      const dependencyNames = fullGraph.dependenciesOf(moduleKey)
+      const resolvedDependencies = dependencyNames.map((n) => resolvedModules[n])
+
+      try {
+        if (!resolvedConfig) {
+          const rawConfig = this.rawConfigsByKey[moduleKey]
+
+          this.log.silly(`ModuleResolver: Resolve config ${moduleKey}`)
+          resolvedConfig = resolvedConfigs[moduleKey] = await this.resolveModuleConfig(rawConfig, resolvedDependencies)
+
+          // Check if any new build dependencies were added by the configure handler
+          for (const dep of resolvedConfig.build.dependencies) {
+            const depKey = getModuleKey(dep.name, dep.plugin)
+
+            if (!dependencyNames.includes(depKey)) {
+              this.log.silly(`ModuleResolver: Found new dependency ${depKey} when resolving ${moduleKey}`)
+
+              // We throw if the build dependency can't be found at all
+              if (!fullGraph.hasNode(depKey)) {
+                throw missingBuildDependency(rawConfig.name, depKey)
+              }
+              fullGraph.addDependency(moduleKey, depKey)
+
+              foundNewDependency = true
+
+              // The dependency may already have been processed, we don't want to add it to the graph in that case
+              if (processingGraph.hasNode(depKey)) {
+                this.log.silly(`ModuleResolver: Need to re-resolve ${moduleKey} after processing new dependencies`)
+                processingGraph.addDependency(moduleKey, depKey)
+              }
+            }
+          }
+        }
+
+        // If no unresolved build dependency was added, fully resolve the module and remove from graph, otherwise keep
+        // it in the graph and move on to make sure we fully resolve the dependencies and don't run into circular
+        // dependencies.
+        if (!foundNewDependency) {
+          const buildPath = this.garden.buildStaging.getBuildPath(resolvedConfig)
+          resolvedModules[moduleKey] = await this.resolveModule(resolvedConfig, buildPath, resolvedDependencies)
+          this.log.silly(`ModuleResolver: Module ${moduleKey} resolved`)
+          processingGraph.removeNode(moduleKey)
+        }
+      } catch (err) {
+        this.log.silly(`ModuleResolver: Node ${moduleKey} failed: ${err.message}`)
+        errors[moduleKey] = err
+      }
+
+      inFlight.delete(moduleKey)
+      return processLeaves()
+    }
+
+    const processLeaves = async () => {
+      if (Object.keys(errors).length > 0) {
+        const errorStr = Object.entries(errors)
+          .map(([name, err]) => `${chalk.white.bold(name)}: ${err.message}`)
+          .join("\n")
+        const errorStack = Object.entries(errors)
+          .map(([name, err]) => `${chalk.white.bold(name)}: ${err.stack || err.message}`)
+          .join("\n\n")
+
+        const msg = `Failed resolving one or more modules:\n\n${errorStr}`
+
+        const combined = new ConfigurationError(chalk.red(msg), { ...errors })
+        combined.stack = errorStack
+        throw combined
+      }
+
       // Get batch of leaf nodes (ones with no unresolved dependencies). Implicitly checks for circular dependencies.
       let batch: string[]
 
       try {
-        batch = processingGraph.overallOrder(true)
+        batch = processingGraph.overallOrder(true).filter((n) => !inFlight.has(n))
       } catch (err) {
         throw new ConfigurationError(
           dedent`
@@ -118,78 +205,38 @@ export class ModuleResolver {
         )
       }
 
-      // Process each of the leaf node module configs.
-      await Bluebird.map(
-        batch,
-        async (moduleName) => {
-          // Resolve configuration, unless previously resolved.
-          let resolvedConfig = resolvedConfigs[moduleName]
-          let foundNewDependency = false
+      this.log.silly(`ModuleResolver: Process ${batch.length} leaves`)
 
-          const dependencyNames = fullGraph.dependenciesOf(moduleName)
-          const resolvedDependencies = dependencyNames.map((n) => resolvedModules[n])
-
-          try {
-            if (!resolvedConfig) {
-              const rawConfig = this.rawConfigsByName[moduleName]
-
-              resolvedConfig = resolvedConfigs[moduleName] = await this.resolveModuleConfig(
-                rawConfig,
-                resolvedDependencies
-              )
-
-              // Check if any new build dependencies were added by the configure handler
-              for (const dep of resolvedConfig.build.dependencies) {
-                if (!dependencyNames.includes(dep.name)) {
-                  foundNewDependency = true
-
-                  // We throw if the build dependency can't be found at all
-                  if (!fullGraph.hasNode(dep.name)) {
-                    this.missingBuildDependency(moduleName, dep.name)
-                  }
-                  fullGraph.addDependency(moduleName, dep.name)
-
-                  // The dependency may already have been processed, we don't want to add it to the graph in that case
-                  if (processingGraph.hasNode(dep.name)) {
-                    processingGraph.addDependency(moduleName, dep.name)
-                  }
-                }
-              }
-            }
-
-            // If no build dependency was added, fully resolve the module and remove from graph, otherwise keep it
-            // in the graph and move on to make sure we fully resolve the dependencies and don't run into circular
-            // dependencies.
-            if (!foundNewDependency) {
-              const buildPath = await this.garden.buildStaging.buildPath(resolvedConfig)
-              resolvedModules[moduleName] = await this.resolveModule(resolvedConfig, buildPath, resolvedDependencies)
-              processingGraph.removeNode(moduleName)
-            }
-          } catch (err) {
-            errors[moduleName] = err
-          }
-        },
-        { concurrency: moduleResolutionConcurrencyLimit }
-      )
-
-      if (Object.keys(errors).length > 0) {
-        const errorStr = Object.entries(errors)
-          .map(([name, err]) => `${chalk.white.bold(name)}: ${err.message}`)
-          .join("\n")
-
-        throw new ConfigurationError(chalk.red(`Failed resolving one or more modules:\n\n${errorStr}`), {
-          errors,
-        })
+      if (batch.length === 0) {
+        return
       }
+
+      const overLimit = inFlight.size + batch.length - moduleResolutionConcurrencyLimit
+
+      if (overLimit > 0) {
+        batch = batch.slice(batch.length - overLimit)
+      }
+
+      // Process each of the leaf node module configs.
+      await Bluebird.map(batch, processNode)
+    }
+
+    // Iterate through dependency graph, a batch of leaves at a time. While there are items remaining:
+    let i = 0
+
+    while (processingGraph.size() > 0) {
+      this.log.silly(`ModuleResolver: Loop ${++i}`)
+      await processLeaves()
     }
 
     return Object.values(resolvedModules)
   }
 
   /**
-   * Returns module configs for each module that is referenced in a ${modules.*} template string in the raw config.
+   * Returns module configs for each module that is referenced in a ${modules.*} template string in the raw config,
+   * as well as any immediately resolvable declared build dependencies.
    */
-  private getModuleDependenciesFromTemplateStrings(rawConfig: ModuleConfig, buildPath: string) {
+  private getModuleDependenciesFromConfig(rawConfig: ModuleConfig, buildPath: string) {
     const configContext = new ModuleConfigContext({
       garden: this.garden,
       variables: this.garden.variables,
@@ -202,28 +249,31 @@ export class ModuleResolver {
     })
 
     const templateRefs = getModuleTemplateReferences(rawConfig, configContext)
-    const deps = templateRefs.filter((d) => d[1] !== rawConfig.name)
+    const templateDeps = <string[]>templateRefs.filter((d) => d[1] !== rawConfig.name).map((d) => d[1])
 
-    return deps.map((d) => {
-      const name = d[1]
-      const moduleConfig = this.rawConfigsByName[name]
+    // Try resolving template strings if possible
+    let buildDeps: string[] = []
+    const resolvedDeps = resolveTemplateStrings(rawConfig.build.dependencies, configContext, { allowPartial: true })
+
+    // The build.dependencies field may not resolve at all, in which case we can't extract any deps from there
+    if (isArray(resolvedDeps)) {
+      buildDeps = resolvedDeps
+        // We only collect fully-resolved references here
+        .filter((d) => !mayContainTemplateString(d) && (isString(d) || d.name))
+        .map((d) => (isString(d) ? d : getModuleKey(d.name, d.plugin)))
+    }
+
+    const deps = [...templateDeps, ...buildDeps]
+
+    return deps.map((name) => {
+      const moduleConfig = this.rawConfigsByKey[name]
 
       if (!moduleConfig) {
-        this.missingBuildDependency(rawConfig.name, name as string)
+        throw missingBuildDependency(rawConfig.name, name as string)
       }
 
       return moduleConfig
     })
-  }
-
-  private missingBuildDependency(moduleName: string, dependencyName: string) {
-    throw new ConfigurationError(
-      chalk.red(
-        `Could not find build dependency ${chalk.white(dependencyName)}, ` +
-          `configured in module ${chalk.white(moduleName)}`
-      ),
-      { moduleName, dependencyName }
-    )
   }
 
   /**
@@ -233,7 +283,7 @@ export class ModuleResolver {
     const garden = this.garden
     let inputs = {}
 
-    const buildPath = await this.garden.buildStaging.buildPath(config)
+    const buildPath = this.garden.buildStaging.getBuildPath(config)
 
     const templateContextParams: ModuleConfigContextParams = {
       garden,
@@ -273,13 +323,8 @@ export class ModuleResolver {
       config.inputs = inputs
     }
 
-    // Resolve the variables field before resolving everything else
-    const rawVariables = config.variables
-    const resolvedVariables = resolveTemplateStrings(
-      cloneDeep(rawVariables || {}),
-      new ModuleConfigContext(templateContextParams),
-      { allowPartial: false }
-    )
+    // Resolve the variables field before resolving everything else (overriding with module varfiles if present)
+    const resolvedModuleVariables = await this.resolveVariables(config, templateContextParams)
 
     // Now resolve just references to inputs on the config
     config = resolveTemplateStrings(cloneDeep(config), new GenericContext({ inputs }), {
@@ -290,14 +335,14 @@ export class ModuleResolver {
     const configContext = new ModuleConfigContext({
       ...templateContextParams,
       moduleConfig: config,
-      variables: { ...garden.variables, ...resolvedVariables },
+      variables: { ...garden.variables, ...resolvedModuleVariables },
     })
 
     config = resolveTemplateStrings({ ...config, inputs: {}, variables: {} }, configContext, {
       allowPartial: false,
     })
 
-    config.variables = rawVariables ? resolvedVariables : undefined
+    config.variables = resolvedModuleVariables
     config.inputs = inputs
 
     const moduleTypeDefinitions = await garden.getModuleTypes()
@@ -315,6 +360,22 @@ export class ModuleResolver {
       )
     }
 
+    // We allow specifying modules by name only as a shorthand:
+    //
+    // dependencies:
+    //   - foo-module
+    //   - name: foo-module // same as the above
+    //
+    // Empty strings and nulls are omitted from the array.
+    if (config.build && config.build.dependencies) {
+      config.build.dependencies = prepareBuildDependencies(config.build.dependencies).filter((dep) => dep.name)
+    }
+
+    // We need to refilter the build dependencies on the spec in case one or more dependency names resolved to null.
+    if (config.spec.build && config.spec.build.dependencies) {
+      config.spec.build.dependencies = prepareBuildDependencies(config.spec.build.dependencies)
+    }
+
     // Validate the module-type specific spec
     if (description.schema) {
       config.spec = validateWithPath({
@@ -325,19 +386,6 @@ export class ModuleResolver {
         path: config.path,
         projectRoot: garden.projectRoot,
       })
-    }
-
-    /*
-      We allow specifying modules by name only as a shorthand:
-
-      dependencies:
-        - foo-module
-        - name: foo-module // same as the above
-    */
-    if (config.build && config.build.dependencies) {
-      config.build.dependencies = config.build.dependencies.map((dep) =>
-        typeof dep === "string" ? { name: dep, copy: [] } : dep
-      )
     }
 
     // Validate the base config schema
@@ -369,7 +417,7 @@ export class ModuleResolver {
     config = configureResult.moduleConfig
 
     // Validate the configure handler output against the module type's bases
-    const bases = getModuleTypeBases(moduleTypeDefinitions[config.type], moduleTypeDefinitions)
+    const bases = this.getBases(config.type, moduleTypeDefinitions)
 
     for (const base of bases) {
       if (base.schema) {
@@ -377,7 +425,7 @@ export class ModuleResolver {
 
         config.spec = <ModuleConfig>validateWithPath({
           config: config.spec,
-          schema: base.schema.unknown(true),
+          schema: base.schema,
           path: garden.projectRoot,
           projectRoot: garden.projectRoot,
           configType: `configuration for module '${config.name}' (base schema from '${base.name}' plugin)`,
@@ -404,7 +452,22 @@ export class ModuleResolver {
     return config
   }
 
+  /**
+   * Get the bases for the given module type, with schemas modified to allow any unknown fields.
+   */
+  private getBases(type: string, definitions: ModuleTypeMap) {
+    if (this.bases[type]) {
+      return this.bases[type]
+    }
+
+    const bases = getModuleTypeBases(definitions[type], definitions)
+    this.bases[type] = bases.map((b) => ({ ...b, schema: b.schema ? allowUnknown(b.schema) : undefined }))
+    return this.bases[type]
+  }
+
   private async resolveModule(resolvedConfig: ModuleConfig, buildPath: string, dependencies: GardenModule[]) {
+    this.log.silly(`Resolving module ${resolvedConfig.name}`)
+
     // Write module files
     const configContext = new ModuleConfigContext({
       garden: this.garden,
@@ -417,18 +480,48 @@ export class ModuleResolver {
       partialRuntimeResolution: true,
     })
 
+    let updatedFiles = false
+
     await Bluebird.map(resolvedConfig.generateFiles || [], async (fileSpec) => {
       let contents = fileSpec.value || ""
 
       if (fileSpec.sourcePath) {
         const configDir = resolvedConfig.configPath ? dirname(resolvedConfig.configPath) : resolvedConfig.path
         const sourcePath = resolve(configDir, fileSpec.sourcePath)
-        contents = (await readFile(sourcePath)).toString()
+
+        try {
+          contents = (await readFile(sourcePath)).toString()
+        } catch (err) {
+          throw new ConfigurationError(
+            `Unable to read file at ${sourcePath}, specified under generateFiles in module ${resolvedConfig.name}: ${err}`,
+            {
+              sourcePath,
+            }
+          )
+        }
       }
 
-      const resolvedContents = resolveTemplateString(contents, configContext, { unescape: true })
+      const resolvedContents = fileSpec.resolveTemplates
+        ? resolveTemplateString(contents, configContext, { unescape: true })
+        : contents
+
       const targetDir = resolve(resolvedConfig.path, ...posix.dirname(fileSpec.targetPath).split(posix.sep))
       const targetPath = resolve(resolvedConfig.path, ...fileSpec.targetPath.split(posix.sep))
+
+      // Avoid unnecessary write + invalidating caches on the module path if no changes are made
+      try {
+        const prior = (await readFile(targetPath)).toString()
+        if (prior === resolvedContents) {
+          // No change, abort
+          return
+        } else {
+          // File is modified, proceed and flag for cache invalidation
+          updatedFiles = true
+        }
+      } catch {
+        // File doesn't exist, proceed and flag for cache invalidation
+        updatedFiles = true
+      }
 
       try {
         await mkdirp(targetDir)
@@ -444,10 +537,10 @@ export class ModuleResolver {
       }
     })
 
-    // Make sure version is re-computed after writing files
-    if (!!resolvedConfig.generateFiles?.length) {
+    // Make sure version is re-computed after writing new/updated files
+    if (updatedFiles) {
       const cacheContext = pathToCacheContext(resolvedConfig.path)
-      this.garden.cache.invalidateUp(cacheContext)
+      this.garden.cache.invalidateUp(this.log, cacheContext)
     }
 
     const module = await moduleFromConfig({
@@ -474,7 +567,7 @@ export class ModuleResolver {
     }
 
     // Validate the module outputs against the module type's bases
-    const bases = getModuleTypeBases(moduleTypeDefinitions[module.type], moduleTypeDefinitions)
+    const bases = this.getBases(module.type, moduleTypeDefinitions)
 
     for (const base of bases) {
       if (base.moduleOutputsSchema) {
@@ -490,11 +583,47 @@ export class ModuleResolver {
         })
       }
     }
-
     return module
+  }
+
+  /**
+   * Resolves module variables with the following precedence order:
+   *
+   *   garden.cliVariables > module varfile > config.variables
+   */
+  private async resolveVariables(
+    config: ModuleConfig,
+    templateContextParams: ModuleConfigContextParams
+  ): Promise<DeepPrimitiveMap> {
+    const moduleConfigContext = new ModuleConfigContext(templateContextParams)
+    const resolveOpts = { allowPartial: false }
+    let varfileVars: DeepPrimitiveMap = {}
+    if (config.varfile) {
+      const varfilePath = resolveTemplateString(config.varfile, moduleConfigContext, resolveOpts)
+      varfileVars = await loadVarfile({
+        configRoot: config.path,
+        path: varfilePath,
+        defaultPath: undefined,
+      })
+    }
+
+    const rawVariables = config.variables
+    const moduleVariables = resolveTemplateStrings(cloneDeep(rawVariables || {}), moduleConfigContext, resolveOpts)
+    const mergedVariables: DeepPrimitiveMap = <any>merge(moduleVariables, merge(varfileVars, this.garden.cliVariables))
+    return mergedVariables
   }
 }
 
 export interface ModuleConfigResolveOpts extends ContextResolveOpts {
   configContext: ModuleConfigContext
+}
+
+function missingBuildDependency(moduleName: string, dependencyName: string) {
+  return new ConfigurationError(
+    chalk.red(
+      `Could not find build dependency ${chalk.white(dependencyName)}, ` +
+        `configured in module ${chalk.white(moduleName)}`
+    ),
+    { moduleName, dependencyName }
+  )
 }

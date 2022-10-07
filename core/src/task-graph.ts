@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,20 +8,21 @@
 
 import Bluebird from "bluebird"
 import chalk from "chalk"
-import { every, flatten, intersection, merge, union, uniqWith, without, groupBy } from "lodash"
+import { every, flatten, intersection, union, uniqWith, without, groupBy } from "lodash"
 import { BaseTask, TaskDefinitionError, TaskType } from "./tasks/base"
 import { gardenEnv } from "./constants"
 import { LogEntry, LogEntryMetadata, TaskLogStatus } from "./logger/log-entry"
 import { toGardenError, GardenBaseError } from "./exceptions"
 import { Garden } from "./garden"
 import { dedent } from "./util/string"
-import { defer, relationshipClasses, uuidv4, safeDumpYaml } from "./util/util"
+import { defer, relationshipClasses, uuidv4, safeDumpYaml, isDisjoint } from "./util/util"
 import { renderError } from "./logger/renderers"
 import { cyclesToString } from "./util/validate-dependencies"
 import { Profile } from "./util/profiling"
 import { renderMessageWithDivider } from "./logger/util"
 import { EventEmitter2 } from "eventemitter2"
 import { toGraphResultEventPayload } from "./events"
+import AsyncLock from "async-lock"
 
 class TaskGraphError extends GardenBaseError {
   type = "task-graph"
@@ -74,6 +75,7 @@ export class TaskGraph extends EventEmitter2 {
   private latestNodes: { [key: string]: TaskNode }
   private logEntryMap: LogEntryMap
   private resultCache: ResultCache
+  private lock: AsyncLock
 
   constructor(
     private garden: Garden,
@@ -91,15 +93,15 @@ export class TaskGraph extends EventEmitter2 {
     this.latestNodes = {}
     this.resultCache = new ResultCache()
     this.logEntryMap = {}
+    this.lock = new AsyncLock()
   }
 
   async process(tasks: BaseTask[], opts?: ProcessTasksOpts): Promise<GraphResults> {
-    let nodes: TaskNode[]
-    try {
-      nodes = await this.nodesWithDependencies({ tasks, dependencyCache: {}, stack: [] })
-    } catch (circularDepsErr) {
-      throw circularDepsErr
-    }
+    this.log.silly(`TaskGraph: Processing ${tasks.length} tasks: ${tasks.map((t) => t.getKey()).join(",")}`)
+
+    const nodes = await this.nodesWithDependencies({ tasks, nodeMap: {}, stack: [] })
+
+    this.log.silly(`TaskGraph: Partitioning into batches`)
 
     const batches = this.partition(nodes)
     for (const batch of batches) {
@@ -107,6 +109,8 @@ export class TaskGraph extends EventEmitter2 {
         this.latestNodes[node.key] = node
       }
     }
+
+    this.log.silly(`TaskGraph: Split into ${batches.length} batches`)
 
     this.pendingBatches.push(...batches)
     this.processGraph()
@@ -117,7 +121,14 @@ export class TaskGraph extends EventEmitter2 {
      * Note that these promises will never throw errors, since all errors in async code related
      * to processing tasks are caught in processNode and stored on that task's result.error.
      */
-    const results: GraphResults = merge({}, ...(await Bluebird.map(batches, (b) => b.promise)))
+    const results: GraphResults = {}
+    const batchResults = await Bluebird.map(batches, (b) => b.promise)
+
+    for (const batch of batchResults) {
+      for (const [key, result] of Object.entries(batch)) {
+        results[key] = result
+      }
+    }
 
     if (opts && opts.throwOnError) {
       const failed = Object.entries(results).filter(([_, result]) => result && result.error)
@@ -125,7 +136,7 @@ export class TaskGraph extends EventEmitter2 {
       if (failed.length > 0) {
         throw new TaskGraphError(
           dedent`
-            ${failed.length} task(s) failed:
+            ${failed.length} action(s) failed:
             ${failed.map(([key, result]) => `- ${key}: ${result?.error?.stack || result?.error?.message}`).join("\n")}
           `,
           { results }
@@ -138,37 +149,54 @@ export class TaskGraph extends EventEmitter2 {
 
   private async nodesWithDependencies({
     tasks,
-    dependencyCache,
+    nodeMap,
     stack,
   }: {
     tasks: BaseTask[]
-    dependencyCache: { [key: string]: BaseTask[] }
+    nodeMap: { [key: string]: TaskNode }
     stack: string[]
   }): Promise<TaskNode[]> {
     return Bluebird.map(tasks, async (task) => {
       const key = task.getKey()
 
-      // Detect circular dependencies
-      const previousOccurrence = stack.indexOf(key)
-      if (previousOccurrence !== -1) {
-        const cycle = stack.slice(previousOccurrence)
-        const description = cyclesToString([cycle])
-        const msg = `Circular task dependencies detected:\n\n${description}\n`
-        throw new CircularDependenciesError(msg, { description, cycle })
+      if (nodeMap[key]) {
+        return nodeMap[key]
       }
 
-      let depTasks = dependencyCache[key]
+      return this.lock.acquire("node-" + key, async () => {
+        if (nodeMap[key]) {
+          return nodeMap[key]
+        }
 
-      if (!depTasks) {
-        dependencyCache[key] = depTasks = await task.resolveDependencies()
-      }
+        const newStack = [...stack, key]
+        this.log.silly(`TaskGraph: Resolving dependencies for node ${task.getKey()}`)
+        const depTasks = await task.getDependencies()
+        this.log.silly(
+          `TaskGraph: Got ${depTasks.length} dependencies for node ${task.getKey()}: ${depTasks
+            .map((t) => t.getKey())
+            .join(",")}`
+        )
 
-      const depNodes = await this.nodesWithDependencies({
-        tasks: depTasks,
-        dependencyCache,
-        stack: [...stack, key],
+        // Detect circular dependencies
+        for (const dep of depTasks) {
+          const previousOccurrence = newStack.indexOf(dep.getKey())
+          if (previousOccurrence !== -1) {
+            const cycle = newStack.slice(previousOccurrence)
+            const description = cyclesToString([cycle])
+            const msg = `Circular task dependencies detected:\n\n${description}\n`
+            throw new CircularDependenciesError(msg, { description, cycle })
+          }
+        }
+
+        const depNodes = await this.nodesWithDependencies({
+          tasks: depTasks,
+          nodeMap,
+          stack: newStack,
+        })
+        nodeMap[key] = new TaskNode(task, depNodes)
+
+        return nodeMap[key]
       })
-      return new TaskNode(task, depNodes)
     })
   }
 
@@ -184,16 +212,16 @@ export class TaskGraph extends EventEmitter2 {
     })
 
     const nodesWithKeys = deduplicatedNodes.map((node) => {
-      return { node, resultKeys: this.keysWithDependencies(node) }
+      return { node, resultKeys: new Set(this.keysWithDependencies(node)) }
     })
 
     const sharesDeps = (node1withKeys, node2withKeys) => {
-      return intersection(node1withKeys.resultKeys, node2withKeys.resultKeys).length > 0
+      return !isDisjoint(node1withKeys.resultKeys, node2withKeys.resultKeys)
     }
 
     return relationshipClasses(nodesWithKeys, sharesDeps).map((cls) => {
       const nodesForBatch = cls.map((n) => n.node)
-      const resultKeys: string[] = union(...cls.map((ts) => ts.resultKeys))
+      const resultKeys: string[] = union(...cls.map((ts) => [...ts.resultKeys]))
       return new TaskNodeBatch(nodesForBatch, resultKeys)
     })
   }
@@ -577,7 +605,11 @@ export class TaskGraph extends EventEmitter2 {
         entry.setError({ msg: `Failed task ${idStr}`, metadata })
       }
     }
-    this.logEntryMap.counter.setState(remainingTasksToStr(this.index.length))
+    const currentMsg = this.logEntryMap.counter.getLatestMessage()?.msg
+    const msg = remainingTasksToStr(this.index.length)
+    if (currentMsg && msg !== currentMsg) {
+      this.logEntryMap.counter.setState(msg)
+    }
   }
 
   private initLogging() {

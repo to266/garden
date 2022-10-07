@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -126,6 +126,18 @@ describe("detectModuleOverlap", () => {
         },
       ])
     })
+    it("should ignore modules that are disabled", () => {
+      const moduleA = {
+        name: "module-a",
+        path: join(projectRoot, "foo"),
+        disabled: true,
+      } as ModuleConfig
+      const moduleB = {
+        name: "module-b",
+        path: join(projectRoot, "foo"),
+      } as ModuleConfig
+      expect(detectModuleOverlap({ projectRoot, gardenDirPath, moduleConfigs: [moduleA, moduleB] })).to.be.empty
+    })
   })
 
   context("nested modules", () => {
@@ -147,6 +159,19 @@ describe("detectModuleOverlap", () => {
         name: "module-a",
         path: join(projectRoot, "foo"),
         exclude: [""],
+      } as ModuleConfig
+      const moduleB = {
+        name: "module-b",
+        path: join(projectRoot, "foo", "bar"),
+      } as ModuleConfig
+      expect(detectModuleOverlap({ projectRoot, gardenDirPath, moduleConfigs: [moduleA, moduleB] })).to.be.empty
+    })
+
+    it("should ignore modules that are disabled", () => {
+      const moduleA = {
+        name: "module-a",
+        path: join(projectRoot, "foo"),
+        disabled: true,
       } as ModuleConfig
       const moduleB = {
         name: "module-b",
@@ -305,6 +330,7 @@ describe("findConfigPathsInPath", () => {
       log: garden.log,
     })
     expect(files).to.eql([
+      join(garden.projectRoot, "commands.garden.yml"),
       join(garden.projectRoot, "garden.yml"),
       join(garden.projectRoot, "module-a", "garden.yml"),
       join(garden.projectRoot, "module-b", "garden.yml"),
@@ -349,6 +375,7 @@ describe("findConfigPathsInPath", () => {
       exclude,
     })
     expect(files).to.eql([
+      join(garden.projectRoot, "commands.garden.yml"),
       join(garden.projectRoot, "garden.yml"),
       join(garden.projectRoot, "module-b", "garden.yml"),
       join(garden.projectRoot, "module-c", "garden.yml"),

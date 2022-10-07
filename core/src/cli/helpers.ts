@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -18,7 +18,7 @@ import { maxBy, zip } from "lodash"
 
 import { ParameterValues, Parameter, Parameters } from "./params"
 import { InternalError, ParameterError } from "../exceptions"
-import { getPackageVersion } from "../util/util"
+import { getPackageVersion, removeSlice } from "../util/util"
 import { LogEntry } from "../logger/log-entry"
 import { STATIC_DIR, VERSION_CHECK_URL, gardenEnv } from "../constants"
 import { printWarningMessage } from "../logger/util"
@@ -28,16 +28,28 @@ import { getUserId } from "../analytics/analytics"
 import minimist = require("minimist")
 import { renderTable, tablePresets, naturalList } from "../util/string"
 import { globalOptions, GlobalOptions } from "./params"
-import { Command, CommandGroup } from "../commands/base"
+import { BuiltinArgs, Command, CommandGroup } from "../commands/base"
 import { DeepPrimitiveMap } from "../config/common"
+import { validateGitInstall } from "../vcs/vcs"
+import { validateRsyncInstall } from "../build-staging/rsync"
 
-export const cliStyles = {
-  heading: (str: string) => chalk.white.bold(str),
-  commandPlaceholder: () => chalk.blueBright("<command>"),
-  optionsPlaceholder: () => chalk.yellowBright("[options]"),
-  hints: (str: string) => chalk.gray(str),
-  usagePositional: (key: string, required: boolean) => chalk.cyan(required ? `<${key}>` : `[${key}]`),
-  usageOption: (str: string) => chalk.cyan(`<${str}>`),
+let _cliStyles: any
+
+export function getCliStyles() {
+  if (_cliStyles) {
+    return _cliStyles
+  }
+
+  _cliStyles = {
+    heading: (str: string) => chalk.white.bold(str),
+    commandPlaceholder: () => chalk.blueBright("<command>"),
+    optionsPlaceholder: () => chalk.yellowBright("[options]"),
+    hints: (str: string) => chalk.gray(str),
+    usagePositional: (key: string, required: boolean) => chalk.cyan(required ? `<${key}>` : `[${key}]`),
+    usageOption: (str: string) => chalk.cyan(`<${str}>`),
+  }
+
+  return _cliStyles
 }
 
 /**
@@ -59,6 +71,14 @@ export async function checkForStaticDir() {
   }
 }
 
+/**
+ * checks if requirements to run garden are installed, throws if they are not
+ */
+export async function checkRequirements() {
+  await validateRsyncInstall()
+  await validateGitInstall()
+}
+
 export async function checkForUpdates(config: GlobalConfigStore, logger: LogEntry) {
   if (gardenEnv.GARDEN_DISABLE_VERSION_CHECK) {
     return
@@ -69,38 +89,37 @@ export async function checkForUpdates(config: GlobalConfigStore, logger: LogEntr
     platform: platform(),
     platformVersion: release(),
   }
-  try {
-    const globalConfig = await config.get()
-    const headers = {}
-    headers["X-user-id"] = getUserId(globalConfig)
-    headers["X-ci-check"] = ci.isCI
-    if (ci.isCI) {
-      headers["X-ci-name"] = ci.name
-    }
 
-    const res = await got(`${VERSION_CHECK_URL}?${qs.stringify(query)}`, { headers }).json<any>()
-    const configObj = await config.get()
-    const showMessage =
-      configObj.lastVersionCheck && moment().subtract(1, "days").isAfter(moment(configObj.lastVersionCheck.lastRun))
+  const globalConfig = await config.get()
+  const headers = {}
+  headers["X-user-id"] = getUserId(globalConfig)
+  headers["X-ci-check"] = ci.isCI
+  if (ci.isCI) {
+    headers["X-ci-name"] = ci.name
+  }
 
-    // we check again for lastVersionCheck because in the first run it doesn't exist
-    if (showMessage || !configObj.lastVersionCheck) {
-      if (res.status === "OUTDATED") {
-        res.message && printWarningMessage(logger, res.message)
-        await config.set([globalConfigKeys.lastVersionCheck], { lastRun: new Date() })
-      }
+  const res = await got(`${VERSION_CHECK_URL}?${qs.stringify(query)}`, { headers }).json<any>()
+  const configObj = await config.get()
+  const showMessage =
+    configObj.lastVersionCheck && moment().subtract(1, "days").isAfter(moment(configObj.lastVersionCheck.lastRun))
+
+  // we check again for lastVersionCheck because in the first run it doesn't exist
+  if (showMessage || !configObj.lastVersionCheck) {
+    if (res.status === "OUTDATED") {
+      res.message && printWarningMessage(logger, res.message)
+      await config.set([globalConfigKeys.lastVersionCheck], { lastRun: new Date() })
     }
-  } catch (err) {
-    logger.verbose("Something went wrong while checking for the latest Garden version.")
-    logger.verbose(err)
   }
 }
 
 export function pickCommand(commands: (Command | CommandGroup)[], args: string[]) {
   // Sorting by reverse path length to make sure we pick the most specific command
+  let matchedPath: string[] | undefined = undefined
+
   const command = sortBy(commands, (cmd) => -cmd.getPath().length).find((c) => {
     for (const path of c.getPaths()) {
       if (isEqual(path, args.slice(0, path.length))) {
+        matchedPath = path
         return true
       }
     }
@@ -108,42 +127,31 @@ export function pickCommand(commands: (Command | CommandGroup)[], args: string[]
   })
 
   const rest = command ? args.slice(command.getPath().length) : args
-  return { command, rest }
+  return { command, rest, matchedPath }
 }
 
 export type ParamSpec = {
   [key: string]: Parameter<string | string[] | number | boolean | undefined>
 }
 
-/**
- * Parses the given CLI arguments using minimist. The result should be fed to `processCliArgs()`
- *
- * @param stringArgs  Raw string arguments
- * @param command     The Command that the arguments are for, if any
- * @param cli         If true, prefer `param.cliDefault` to `param.defaultValue`
- * @param skipDefault Defaults to `false`. If `true`, don't populate default values.
- */
-export function parseCliArgs({
-  stringArgs,
-  command,
+export function prepareMinimistOpts({
+  options,
   cli,
   skipDefault = false,
 }: {
-  stringArgs: string[]
-  command?: Command
+  options: { [key: string]: Parameter<any> }
   cli: boolean
   skipDefault?: boolean
 }) {
   // Tell minimist which flags are to be treated explicitly as booleans and strings
-  const allOptions = { ...globalOptions, ...(command?.options || {}) }
-  const booleanKeys = Object.keys(pickBy(allOptions, (spec) => spec.type === "boolean"))
-  const stringKeys = Object.keys(pickBy(allOptions, (spec) => spec.type !== "boolean" && spec.type !== "number"))
+  const booleanKeys = Object.keys(pickBy(options, (spec) => spec.type === "boolean"))
+  const stringKeys = Object.keys(pickBy(options, (spec) => spec.type !== "boolean" && spec.type !== "number"))
 
   // Specify option flag aliases
   const aliases = {}
   const defaultValues = {}
 
-  for (const [name, spec] of Object.entries(allOptions)) {
+  for (const [name, spec] of Object.entries(options)) {
     if (!skipDefault) {
       defaultValues[name] = spec.getDefaultValue(cli)
     }
@@ -156,18 +164,34 @@ export function parseCliArgs({
     }
   }
 
-  return minimist(stringArgs, {
-    "--": true,
-    "boolean": booleanKeys,
-    "string": stringKeys,
-    "alias": aliases,
-    "default": defaultValues,
-  })
+  return {
+    boolean: booleanKeys,
+    string: stringKeys,
+    alias: aliases,
+    default: defaultValues,
+  }
 }
 
-interface DefaultArgs {
-  // Contains anything after -- on the command line
-  _: string[]
+/**
+ * Parses the given CLI arguments using minimist. The result should be fed to `processCliArgs()`
+ *
+ * @param stringArgs  Raw string arguments
+ * @param command     The Command that the arguments are for, if any
+ * @param cli         If true, prefer `param.cliDefault` to `param.defaultValue`
+ * @param skipDefault Defaults to `false`. If `true`, don't populate default values.
+ */
+export function parseCliArgs(params: { stringArgs: string[]; command?: Command; cli: boolean; skipDefault?: boolean }) {
+  const opts = prepareMinimistOpts({
+    options: { ...globalOptions, ...(params.command?.options || {}) },
+    ...params,
+  })
+
+  const { stringArgs } = params
+
+  return minimist(stringArgs, {
+    ...opts,
+    "--": true,
+  })
 }
 
 /**
@@ -179,17 +203,25 @@ interface DefaultArgs {
  * @param cli         Set to false if `cliOnly` options should be ignored
  */
 export function processCliArgs<A extends Parameters, O extends Parameters>({
+  rawArgs,
   parsedArgs,
   command,
+  matchedPath,
   cli,
 }: {
+  rawArgs: string[]
   parsedArgs: minimist.ParsedArgs
   command: Command<A, O>
+  matchedPath?: string[]
   cli: boolean
 }) {
+  const parsed = parseCliArgs({ stringArgs: rawArgs, cli, skipDefault: true })
+  const commandName = matchedPath || command.getPath()
+  const all = removeSlice(rawArgs, commandName)
+
   const argSpec = command.arguments || <A>{}
   const argKeys = Object.keys(argSpec)
-  const processedArgs = { _: parsedArgs["--"] || [] }
+  const processedArgs = { "$all": all, "--": parsed["--"] || [] }
 
   const errors: string[] = []
 
@@ -216,6 +248,10 @@ export function processCliArgs<A extends Parameters, O extends Parameters>({
     const spec = argSpec[argKey]
 
     if (!spec) {
+      if (command.allowUndefinedArguments) {
+        continue
+      }
+
       const expected = argKeys.length > 0 ? "only " + naturalList(argKeys.map((key) => chalk.white.bold(key))) : "none"
       throw new ParameterError(`Unexpected positional argument "${argVal}" (expected ${expected})`, {
         expectedKeys: argKeys,
@@ -256,8 +292,12 @@ export function processCliArgs<A extends Parameters, O extends Parameters>({
     const flagStr = chalk.white.bold(key.length === 1 ? "-" + key : "--" + key)
 
     if (!spec) {
-      errors.push(`Unrecognized option flag ${flagStr}`)
-      continue
+      if (command.allowUndefinedArguments && value !== undefined) {
+        processedOpts[key] = value
+      } else {
+        errors.push(`Unrecognized option flag ${flagStr}`)
+        continue
+      }
     }
 
     if (!optSpec[key]) {
@@ -289,9 +329,17 @@ export function processCliArgs<A extends Parameters, O extends Parameters>({
     throw new ParameterError(chalk.red.bold(errors.join("\n")), { parsedArgs, processedArgs, processedOpts, errors })
   }
 
+  // To ensure that `command.params` behaves intuitively in template strings, we don't want to add option keys with
+  // null/undefined values.
+  //
+  // For example, we don't want `${command.params contains 'dev-mode'}` to be `true` when running `garden deploy`
+  // unless the `--dev` flag was actually passed (since the user would expect the option value to be an array if
+  // present).
+  const cleanedProcessedOpts = pickBy(processedOpts, (value) => !(value === undefined || value === null))
+
   return {
-    args: <DefaultArgs & ParameterValues<A>>processedArgs,
-    opts: <ParameterValues<GlobalOptions> & ParameterValues<O>>processedOpts,
+    args: <BuiltinArgs & ParameterValues<A>>processedArgs,
+    opts: <ParameterValues<GlobalOptions> & ParameterValues<O>>cleanedProcessedOpts,
   }
 }
 
@@ -301,7 +349,7 @@ export function optionsWithAliasValues<A extends Parameters, O extends Parameter
 ): DeepPrimitiveMap {
   const withAliases = { ...parsedOpts } // Create a new object instead of mutating.
   for (const [name, spec] of Object.entries(command.options || {})) {
-    if (spec.alias) {
+    if (spec.alias && parsedOpts[name]) {
       withAliases[spec.alias] = parsedOpts[name]
     }
   }
@@ -329,14 +377,22 @@ export function renderCommands(commands: Command[]) {
 
 export function renderArguments(params: Parameters) {
   return renderParameters(params, (name, param) => {
+    const cliStyles = getCliStyles()
     return " " + cliStyles.usagePositional(name, param.required)
   })
 }
 
 export function renderOptions(params: Parameters) {
   return renderParameters(params, (name, param) => {
-    const alias = param.alias ? `-${param.alias}, ` : ""
-    return chalk.green(` ${alias}--${name} `)
+    const renderAlias = (alias: string | undefined): string => {
+      if (!alias) {
+        return ""
+      }
+      const prefix = alias.length === 1 ? "-" : "--"
+      return `${prefix}${alias}, `
+    }
+    const renderedAlias = renderAlias(param.alias)
+    return chalk.green(` ${renderedAlias}--${name} `)
   })
 }
 

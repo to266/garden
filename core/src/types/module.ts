@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -12,15 +12,7 @@ import { ModuleConfig, moduleConfigSchema } from "../config/module"
 import { ModuleVersion } from "../vcs/vcs"
 import { pathToCacheContext } from "../cache"
 import { Garden } from "../garden"
-import {
-  joiArray,
-  joiIdentifier,
-  joiIdentifierMap,
-  joi,
-  moduleVersionSchema,
-  PrimitiveMap,
-  DeepPrimitiveMap,
-} from "../config/common"
+import { joiArray, joiIdentifier, joiIdentifierMap, joi, moduleVersionSchema, DeepPrimitiveMap } from "../config/common"
 import { getModuleTypeBases } from "../plugins"
 import { ModuleType } from "./plugin/plugin"
 import { moduleOutputsSchema } from "./plugin/module/getModuleOutputs"
@@ -34,8 +26,13 @@ export interface FileCopySpec {
 /**
  * The Module interface adds several internally managed keys to the ModuleConfig type.
  */
-export interface GardenModule<M extends {} = any, S extends {} = any, T extends {} = any, W extends {} = any>
-  extends ModuleConfig<M, S, T, W> {
+export interface GardenModule<
+  M extends {} = any,
+  S extends {} = any,
+  T extends {} = any,
+  W extends {} = any,
+  O extends {} = any
+> extends ModuleConfig<M, S, T, W> {
   buildPath: string
   buildMetadataPath: string
   needsBuild: boolean
@@ -43,7 +40,7 @@ export interface GardenModule<M extends {} = any, S extends {} = any, T extends 
   version: ModuleVersion
 
   buildDependencies: ModuleMap
-  outputs: PrimitiveMap
+  outputs: O
 
   serviceNames: string[]
   serviceDependencyNames: string[]
@@ -66,9 +63,9 @@ export const moduleSchema = () =>
       .description("A list of types that this module is compatible with (i.e. the module type itself + all bases)."),
     configPath: joi.string().description("The path to the module config file, if applicable."),
     version: moduleVersionSchema().required(),
-    buildDependencies: joiIdentifierMap(joi.link("..."))
-      .required()
-      .description("A map of all modules referenced under `build.dependencies`."),
+    buildDependencies: joiIdentifierMap(joi.link("...")).description(
+      "A map of all modules referenced under `build.dependencies`."
+    ),
     needsBuild: joi
       .boolean()
       .required()
@@ -109,7 +106,7 @@ export async function moduleFromConfig({
   buildDependencies: GardenModule[]
   forceVersion?: boolean
 }): Promise<GardenModule> {
-  const version = await garden.resolveModuleVersion(config, config.build.dependencies, forceVersion)
+  const version = await garden.resolveModuleVersion(log, config, buildDependencies, forceVersion)
   const actions = await garden.getActionRouter()
   const { outputs } = await actions.getModuleOutputs({ log, moduleConfig: config, version })
   const moduleTypes = await garden.getModuleTypes()
@@ -118,8 +115,8 @@ export async function moduleFromConfig({
   const module: GardenModule = {
     ...cloneDeep(config),
 
-    buildPath: await garden.buildStaging.buildPath(config),
-    buildMetadataPath: await garden.buildStaging.buildMetadataPath(config.name),
+    buildPath: await garden.buildStaging.ensureBuildPath(config),
+    buildMetadataPath: await garden.buildStaging.ensureBuildMetadataPath(config.name),
 
     version,
     needsBuild: moduleNeedsBuild(config, moduleTypes[config.type]),
@@ -155,7 +152,7 @@ export function moduleNeedsBuild(moduleConfig: ModuleConfig, moduleType: ModuleT
   return moduleType.needsBuild || some(moduleConfig.build.dependencies, (d) => d.copy && d.copy.length > 0)
 }
 
-export function getModuleCacheContext(config: ModuleConfig) {
+export function getModuleCacheContext<M extends ModuleConfig>(config: M) {
   return pathToCacheContext(config.path)
 }
 

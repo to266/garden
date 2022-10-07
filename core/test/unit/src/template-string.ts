@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -340,25 +340,54 @@ describe("resolveTemplateString", async () => {
     expect(res).to.equal("b")
   })
 
-  it("should handle a logical AND between booleans", async () => {
-    const res = resolveTemplateString("${true && a}", new TestContext({ a: true }))
-    expect(res).to.equal(true)
-  })
+  context("logical AND (&& operator)", () => {
+    it("true literal and true variable reference", async () => {
+      const res = resolveTemplateString("${true && a}", new TestContext({ a: true }))
+      expect(res).to.equal(true)
+    })
 
-  it("should handle a logical AND where the first part is false but the second part is not resolvable", async () => {
-    // i.e. the 2nd clause should not need to be evaluated
-    const res = resolveTemplateString("${false && a}", new TestContext({}))
-    expect(res).to.equal(false)
-  })
+    it("two true variable references", async () => {
+      const res = resolveTemplateString("${var.a && var.b}", new TestContext({ var: { a: true, b: true } }))
+      expect(res).to.equal(true)
+    })
 
-  it("should handle a logical AND with an empty string as the first clause", async () => {
-    const res = resolveTemplateString("${'' && true}", new TestContext({}))
-    expect(res).to.equal("")
-  })
+    it("first part is false but the second part is not resolvable", async () => {
+      // i.e. the 2nd clause should not need to be evaluated
+      const res = resolveTemplateString("${false && a}", new TestContext({}))
+      expect(res).to.equal(false)
+    })
 
-  it("should handle a logical AND with an empty string as the second clause", async () => {
-    const res = resolveTemplateString("${true && ''}", new TestContext({}))
-    expect(res).to.equal("")
+    it("an empty string as the first clause", async () => {
+      const res = resolveTemplateString("${'' && true}", new TestContext({}))
+      expect(res).to.equal("")
+    })
+
+    it("an empty string as the second clause", async () => {
+      const res = resolveTemplateString("${true && ''}", new TestContext({}))
+      expect(res).to.equal("")
+    })
+
+    it("a missing reference as the first clause", async () => {
+      const res = resolveTemplateString("${var.foo && 'a'}", new TestContext({ var: {} }))
+      expect(res).to.equal(false)
+    })
+
+    it("a missing reference as the second clause", async () => {
+      const res = resolveTemplateString("${'a' && var.foo}", new TestContext({ var: {} }))
+      expect(res).to.equal(false)
+    })
+
+    context("partial resolution", () => {
+      it("a missing reference as the first clause returns the original template", async () => {
+        const res = resolveTemplateString("${var.foo && 'a'}", new TestContext({ var: {} }), { allowPartial: true })
+        expect(res).to.equal("${var.foo && 'a'}")
+      })
+
+      it("a missing reference as the second clause returns the original template", async () => {
+        const res = resolveTemplateString("${'a' && var.foo}", new TestContext({ var: {} }), { allowPartial: true })
+        expect(res).to.equal("${'a' && var.foo}")
+      })
+    })
   })
 
   it("should handle a positive equality comparison between equal resolved values", async () => {
@@ -627,6 +656,11 @@ describe("resolveTemplateString", async () => {
   it("should handle a ternary expression with an expression as a test", async () => {
     const res = resolveTemplateString("${foo == 'bar' ? a : b}", new TestContext({ foo: "bar", a: true, b: false }))
     expect(res).to.equal(true)
+  })
+
+  it("should ignore errors in a value not returned by a ternary", async () => {
+    const res = resolveTemplateString("${var.foo ? replace(var.foo, ' ', ',') : null}", new TestContext({ var: {} }))
+    expect(res).to.equal(null)
   })
 
   it("should handle a ternary expression with an object as a test", async () => {
@@ -1036,6 +1070,11 @@ describe("resolveTemplateString", async () => {
       expect(res).to.equal("Zm9v")
     })
 
+    it("resolves a template string in a helper argument", () => {
+      const res = resolveTemplateString("${base64Encode('${a}')}", new TestContext({ a: "foo" }))
+      expect(res).to.equal("Zm9v")
+    })
+
     it("resolves a helper function with multiple arguments", () => {
       const res = resolveTemplateString("${split('a,b,c', ',')}", new TestContext({}))
       expect(res).to.eql(["a", "b", "c"])
@@ -1044,6 +1083,11 @@ describe("resolveTemplateString", async () => {
     it("resolves a helper function with a template key reference", () => {
       const res = resolveTemplateString("${base64Encode(a)}", new TestContext({ a: "foo" }))
       expect(res).to.equal("Zm9v")
+    })
+
+    it("generates a correct hash with a string literal from the sha256 helper function", () => {
+      const res = resolveTemplateString("${sha256('This Is A Test String')}", new TestContext({}))
+      expect(res).to.equal("9a058284378d1cc6b4348aacb6ba847918376054b094bbe06eb5302defc52685")
     })
 
     it("throws if an argument is missing", () => {
@@ -1086,6 +1130,38 @@ describe("resolveTemplateString", async () => {
             "Invalid template string (${jsonDecode('{]}')}): Error from helper function jsonDecode: Unexpected token ] in JSON at position 1"
           )
       )
+    })
+  })
+
+  context("array literals", () => {
+    it("returns an empty array literal back", () => {
+      const res = resolveTemplateString("${[]}", new TestContext({}))
+      expect(res).to.eql([])
+    })
+
+    it("returns an array literal of literals back", () => {
+      const res = resolveTemplateString("${['foo', \"bar\", 123, true, false]}", new TestContext({}))
+      expect(res).to.eql(["foo", "bar", 123, true, false])
+    })
+
+    it("resolves a key in an array literal", () => {
+      const res = resolveTemplateString("${[foo]}", new TestContext({ foo: "bar" }))
+      expect(res).to.eql(["bar"])
+    })
+
+    it("resolves a nested key in an array literal", () => {
+      const res = resolveTemplateString("${[foo.bar]}", new TestContext({ foo: { bar: "baz" } }))
+      expect(res).to.eql(["baz"])
+    })
+
+    it("calls a helper in an array literal", () => {
+      const res = resolveTemplateString("${[foo, base64Encode('foo')]}", new TestContext({ foo: "bar" }))
+      expect(res).to.eql(["bar", "Zm9v"])
+    })
+
+    it("calls a helper with an array literal argument", () => {
+      const res = resolveTemplateString("${join(['foo', 'bar'], ',')}", new TestContext({}))
+      expect(res).to.eql("foo,bar")
     })
   })
 })
@@ -1200,6 +1276,274 @@ describe("resolveTemplateStrings", () => {
       a: "a",
       b: "b",
       c: "c",
+    })
+  })
+
+  context("$concat", () => {
+    it("handles array concetenation", () => {
+      const obj = {
+        foo: ["a", { $concat: ["b", "c"] }, "d"],
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({}))
+      expect(res).to.eql({
+        foo: ["a", "b", "c", "d"],
+      })
+    })
+
+    it("resolves $concat value before spreading", () => {
+      const obj = {
+        foo: ["a", { $concat: "${foo}" }, "d"],
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({ foo: ["b", "c"] }))
+      expect(res).to.eql({
+        foo: ["a", "b", "c", "d"],
+      })
+    })
+
+    it("resolves a $forEach in the $concat clause", () => {
+      const obj = {
+        foo: ["a", { $concat: { $forEach: ["B", "C"], $return: "${lower(item.value)}" } }, "d"],
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({ foo: ["b", "c"] }))
+      expect(res).to.eql({
+        foo: ["a", "b", "c", "d"],
+      })
+    })
+
+    it("throws if $concat value is not an array and allowPartial=false", () => {
+      const obj = {
+        foo: ["a", { $concat: "b" }, "d"],
+      }
+
+      expectError(
+        () => resolveTemplateStrings(obj, new TestContext({})),
+        (err) =>
+          expect(stripAnsi(err.message)).to.equal("Value of $concat key must be (or resolve to) an array (got string)")
+      )
+    })
+
+    it("throws if object with $concat key contains other keys as well", () => {
+      const obj = {
+        foo: ["a", { $concat: "b", nope: "nay", oops: "derp" }, "d"],
+      }
+
+      expectError(
+        () => resolveTemplateStrings(obj, new TestContext({})),
+        (err) =>
+          expect(stripAnsi(err.message)).to.equal(
+            'A list item with a $concat key cannot have any other keys (found "nope" and "oops")'
+          )
+      )
+    })
+
+    it("ignores if $concat value is not an array and allowPartial=true", () => {
+      const obj = {
+        foo: ["a", { $concat: "${foo}" }, "d"],
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({}), { allowPartial: true })
+      expect(res).to.eql({
+        foo: ["a", { $concat: "${foo}" }, "d"],
+      })
+    })
+  })
+
+  context("$forEach", () => {
+    it("loops through an array", () => {
+      const obj = {
+        foo: {
+          $forEach: ["a", "b", "c"],
+          $return: "foo",
+        },
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({}))
+      expect(res).to.eql({
+        foo: ["foo", "foo", "foo"],
+      })
+    })
+
+    it("loops through an object", () => {
+      const obj = {
+        foo: {
+          $forEach: {
+            a: 1,
+            b: 2,
+            c: 3,
+          },
+          $return: "${item.key}: ${item.value}",
+        },
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({}))
+      expect(res).to.eql({
+        foo: ["a: 1", "b: 2", "c: 3"],
+      })
+    })
+
+    it("throws if the input isn't a list or object and allowPartial=false", () => {
+      const obj = {
+        foo: {
+          $forEach: "foo",
+          $return: "foo",
+        },
+      }
+
+      expectError(
+        () => resolveTemplateStrings(obj, new TestContext({})),
+        (err) =>
+          expect(stripAnsi(err.message)).to.equal(
+            "Value of $forEach key must be (or resolve to) an array or mapping object (got string)"
+          )
+      )
+    })
+
+    it("ignores the loop if the input isn't a list or object and allowPartial=true", () => {
+      const obj = {
+        foo: {
+          $forEach: "${foo}",
+          $return: "foo",
+        },
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({}), { allowPartial: true })
+      expect(res).to.eql(obj)
+    })
+
+    it("throws if there's no $return clause", () => {
+      const obj = {
+        foo: {
+          $forEach: [1, 2, 3],
+        },
+      }
+
+      expectError(
+        () => resolveTemplateStrings(obj, new TestContext({})),
+        (err) => expect(stripAnsi(err.message)).to.equal("Missing $return field next to $forEach field.")
+      )
+    })
+
+    it("throws if there are superfluous keys on the object", () => {
+      const obj = {
+        foo: {
+          $forEach: [1, 2, 3],
+          $return: "foo",
+          $concat: [4, 5, 6],
+          foo: "bla",
+        },
+      }
+
+      expectError(
+        () => resolveTemplateStrings(obj, new TestContext({})),
+        (err) =>
+          expect(stripAnsi(err.message)).to.equal(
+            'Found one or more unexpected keys on $forEach object: "$concat" and "foo"'
+          )
+      )
+    })
+
+    it("exposes item.value and item.key when resolving the $return clause", () => {
+      const obj = {
+        foo: {
+          $forEach: "${foo}",
+          $return: "${item.key}: ${item.value}",
+        },
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({ foo: ["a", "b", "c"] }))
+      expect(res).to.eql({
+        foo: ["0: a", "1: b", "2: c"],
+      })
+    })
+
+    it("resolves the input before processing", () => {
+      const obj = {
+        foo: {
+          $forEach: "${foo}",
+          $return: "${item.value}",
+        },
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({ foo: ["a", "b", "c"] }))
+      expect(res).to.eql({
+        foo: ["a", "b", "c"],
+      })
+    })
+
+    it("filters out items if $filter resolves to false", () => {
+      const obj = {
+        foo: {
+          $forEach: "${foo}",
+          $filter: "${item.value != 'b'}",
+          $return: "${item.value}",
+        },
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({ foo: ["a", "b", "c"] }))
+      expect(res).to.eql({
+        foo: ["a", "c"],
+      })
+    })
+
+    it("throws if $filter doesn't resolve to a boolean", () => {
+      const obj = {
+        foo: {
+          $forEach: ["a", "b", "c"],
+          $filter: "foo",
+          $return: "${item.value}",
+        },
+      }
+
+      expectError(
+        () => resolveTemplateStrings(obj, new TestContext({})),
+        (err) =>
+          expect(stripAnsi(err.message)).to.equal(
+            "$filter clause in $forEach loop must resolve to a boolean value (got object)"
+          )
+      )
+    })
+
+    it("handles $concat clauses in $return", () => {
+      const obj = {
+        foo: {
+          $forEach: ["a", "b", "c"],
+          $return: {
+            $concat: ["${item.value}-1", "${item.value}-2"],
+          },
+        },
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({}))
+      expect(res).to.eql({
+        foo: ["a-1", "a-2", "b-1", "b-2", "c-1", "c-2"],
+      })
+    })
+
+    it("handles $forEach clauses in $return", () => {
+      const obj = {
+        foo: {
+          $forEach: [
+            ["a1", "a2"],
+            ["b1", "b2"],
+          ],
+          $return: {
+            $forEach: "${item.value}",
+            $return: "${upper(item.value)}",
+          },
+        },
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({}))
+      expect(res).to.eql({
+        foo: [
+          ["A1", "A2"],
+          ["B1", "B2"],
+        ],
+      })
+    })
+
+    it("resolves to empty list for empty list input", () => {
+      const obj = {
+        foo: {
+          $forEach: [],
+          $return: "foo",
+        },
+      }
+      const res = resolveTemplateStrings(obj, new TestContext({}))
+      expect(res).to.eql({
+        foo: [],
+      })
     })
   })
 })

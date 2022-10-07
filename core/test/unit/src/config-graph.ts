@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -341,7 +341,7 @@ describe("ConfigGraph", () => {
   describe("getTasks", () => {
     it("should scan for modules and return all registered tasks in the context", async () => {
       const tasks = graphA.getTasks()
-      expect(getNames(tasks).sort()).to.eql(["task-a", "task-b", "task-c"])
+      expect(getNames(tasks).sort()).to.eql(["task-a", "task-a2", "task-b", "task-c"])
     })
 
     it("should optionally return specified tasks in the context", async () => {
@@ -946,7 +946,7 @@ describe("ConfigGraph", () => {
   describe("render", () => {
     it("should render config graph nodes with test names", () => {
       const rendered = graphA.render()
-      expect(rendered.nodes).to.have.deep.members([
+      expect(rendered.nodes).to.include.deep.members([
         {
           type: "build",
           name: "module-a",

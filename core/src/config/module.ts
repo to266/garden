@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -23,6 +23,9 @@ import { TestConfig, testConfigSchema } from "./test"
 import { TaskConfig, taskConfigSchema } from "./task"
 import { dedent, stableStringify } from "../util/string"
 import { templateKind } from "./module-template"
+import { varfileDescription } from "./project"
+
+export const defaultBuildTimeout = 1200
 
 export interface BuildCopySpec {
   source: string
@@ -40,9 +43,12 @@ const copySchema = () =>
       .subPathOnly()
       .required()
       .description("POSIX-style path or filename of the directory or file(s) to copy to the target."),
-    target: joi.posixPath().subPathOnly().default("").description(dedent`
+    target: joi
+      .posixPath()
+      .subPathOnly()
+      .default((parent) => parent.source).description(dedent`
         POSIX-style path or filename to copy the directory or file(s), relative to the build directory.
-        Defaults to to same as source path.
+        Defaults to the same as source path.
       `),
   })
 
@@ -63,11 +69,13 @@ export const buildDependencySchema = () =>
 
 export interface BaseBuildSpec {
   dependencies: BuildDependencyConfig[]
+  timeout?: number
 }
 
 export interface ModuleFileSpec {
   sourcePath?: string
   targetPath: string
+  resolveTemplates: boolean
   value?: string
 }
 
@@ -87,6 +95,7 @@ interface ModuleSpecCommon {
   repositoryUrl?: string
   type: string
   variables?: DeepPrimitiveMap
+  varfile?: string
 }
 
 export interface AddModuleSpec extends ModuleSpecCommon {
@@ -126,6 +135,13 @@ const generatedFileSchema = () =>
           Note that any existing file with the same name will be overwritten. If the path contains one or more directories, they will be automatically created if missing.
           `
         ),
+      resolveTemplates: joi
+        .boolean()
+        // TODO: flip this default in 0.13?
+        .default(true)
+        .description(
+          "By default, Garden will attempt to resolve any Garden template strings in source files. Set this to false to skip resolving template strings. Note that this does not apply when setting the `value` field, since that's resolved earlier when parsing the configuration."
+        ),
       value: joi.string().description("The desired file contents as a string."),
     })
     .xor("value", "sourcePath")
@@ -137,6 +153,11 @@ export const baseBuildSpecSchema = () =>
       dependencies: joiSparseArray(buildDependencySchema())
         .description("A list of modules that must be built before this module is built.")
         .example([{ name: "some-other-module-name" }]),
+      timeout: joi
+        .number()
+        .integer()
+        .default(defaultBuildTimeout)
+        .description("Maximum time in seconds to wait for build to finish."),
     })
     .default(() => ({ dependencies: [] }))
     .description("Specify how to build the module. Note that plugins may define additional keys on this object.")
@@ -214,6 +235,21 @@ export const baseModuleSpecKeys = () => ({
   variables: joiVariables().default(() => undefined).description(dedent`
     A map of variables scoped to this particular module. These are resolved before any other parts of the module configuration and take precedence over project-scoped variables. They may reference project-scoped variables, and generally use any template strings normally allowed when resolving modules.
   `),
+  varfile: joi
+    .posixPath()
+    .description(
+      dedent`
+      Specify a path (relative to the module root) to a file containing variables, that we apply on top of the
+      module-level \`variables\` field.
+
+      ${varfileDescription}
+
+      To use different module-level varfiles in different environments, you can template in the environment name
+      to the varfile name, e.g. \`varfile: "my-module.\${environment.name}.env\` (this assumes that the corresponding
+      varfiles exist).
+    `
+    )
+    .example("my-module.env"),
 })
 
 export const baseModuleSpecSchema = () => coreModuleSpecSchema().keys(baseModuleSpecKeys())
@@ -223,7 +259,7 @@ export interface ModuleConfig<M extends {} = any, S extends {} = any, T extends 
   path: string
   configPath?: string
   plugin?: string // used to identify modules that are bundled as part of a plugin
-  buildConfig?: object
+  buildConfig?: any
   serviceConfigs: ServiceConfig<S>[]
   testConfigs: TestConfig<T>[]
   taskConfigs: TaskConfig<W>[]

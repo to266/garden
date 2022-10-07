@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -220,61 +220,6 @@ describe("resolveWorkflowConfig", () => {
         { command: ["test"], skip: false, when: "onSuccess", envVars: {} },
       ],
     })
-  })
-
-  it("should throw if a step uses an invalid/unsupported command", async () => {
-    const config: WorkflowConfig = {
-      ...defaults,
-      apiVersion: DEFAULT_API_VERSION,
-      kind: "Workflow",
-      name: "workflow-a",
-      path: "/tmp/foo",
-      description: "Sample workflow",
-      envVars: {},
-      steps: [
-        { description: "Do something silly", command: ["bork"] }, // <------
-        { command: ["test"] },
-      ],
-      triggers: [
-        {
-          environment: "local",
-          events: ["pull-request"],
-          branches: ["feature*"],
-          ignoreBranches: ["feature-ignored*"],
-        },
-      ],
-    }
-
-    await expectError(
-      () => resolveWorkflowConfig(garden, config),
-      (err) => expect(err.message).to.match(/Invalid step command for workflow workflow-a/)
-    )
-  })
-
-  it("should throw if a step command uses a global option", async () => {
-    const config: WorkflowConfig = {
-      ...defaults,
-      apiVersion: DEFAULT_API_VERSION,
-      kind: "Workflow",
-      name: "workflow-a",
-      path: "/tmp/foo",
-      description: "Sample workflow",
-      envVars: {},
-      steps: [{ command: ["test", "--env=foo", "-l", "4"] }, { command: ["test", "--silent"] }],
-      triggers: [
-        {
-          environment: "local",
-          events: ["pull-request"],
-          branches: ["feature*"],
-          ignoreBranches: ["feature-ignored*"],
-        },
-      ],
-    }
-
-    await expectError(
-      () => resolveWorkflowConfig(garden, config),
-      (err) => expect(err.message).to.match(/Invalid step command options for workflow workflow-a/)
-    )
   })
 
   it("should throw if a trigger uses an environment that isn't defined in the project", async () => {

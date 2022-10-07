@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,7 +9,7 @@
 const AsyncLock = require("async-lock")
 import chalk from "chalk"
 import { join } from "path"
-import { mkdirp, pathExists, remove, removeSync } from "fs-extra"
+import { chmod, ensureSymlink, mkdirp, pathExists, remove, removeSync, writeFile } from "fs-extra"
 import respawn from "respawn"
 import { LogEntry } from "../../logger/log-entry"
 import { PluginToolSpec } from "../../types/plugin/tools"
@@ -20,22 +20,35 @@ import { GardenBaseError } from "../../exceptions"
 import { prepareConnectionOpts } from "./kubectl"
 import { KubernetesPluginContext } from "./config"
 import pRetry from "p-retry"
+import { devModeGuideLink } from "./dev-mode"
+import dedent from "dedent"
+import { PluginContext } from "../../plugin-context"
+import Bluebird from "bluebird"
 
 const maxRestarts = 10
 const monitorDelay = 2000
 const mutagenLogSection = "<mutagen>"
+const crashMessage = `Synchronization daemon has crashed ${maxRestarts} times. Aborting.`
+
 export const mutagenAgentPath = "/.garden/mutagen-agent"
 
 let daemonProc: any
 let mutagenTmp: TempDirectory
+let lastDaemonError = ""
+let mutagenTmpSymlinkPath: string
 
 export const mutagenModeMap = {
   "one-way": "one-way-safe",
+  "one-way-safe": "one-way-safe",
+  "one-way-reverse": "one-way-safe",
   "one-way-replica": "one-way-replica",
+  "one-way-replica-reverse": "one-way-replica",
   "two-way": "two-way-safe",
+  "two-way-safe": "two-way-safe",
+  "two-way-resolved": "two-way-resolved",
 }
 
-interface SyncConfig {
+export interface SyncConfig {
   alpha: string
   beta: string
   mode: keyof typeof mutagenModeMap
@@ -47,6 +60,7 @@ interface SyncConfig {
 }
 
 interface ActiveSync {
+  created: Date
   sourceDescription: string
   targetDescription: string
   logSection: string
@@ -68,17 +82,23 @@ export const mutagenConfigLock = new AsyncLock()
 
 registerCleanupFunction("kill-sync-daaemon", () => {
   stopDaemonProc()
-  mutagenTmp && removeSync(mutagenTmp.path)
+  try {
+    mutagenTmp && removeSync(mutagenTmp.path)
+  } catch {}
+  try {
+    mutagenTmpSymlinkPath && removeSync(mutagenTmpSymlinkPath)
+  } catch {}
 })
 
 export async function killSyncDaemon(clearTmpDir = true) {
   stopDaemonProc()
   if (mutagenTmp) {
     await remove(join(mutagenTmp.path, "mutagen.yml.lock"))
-  }
 
-  if (clearTmpDir) {
-    mutagenTmp && (await remove(mutagenTmp.path))
+    if (clearTmpDir) {
+      await remove(mutagenTmp.path)
+      mutagenTmpSymlinkPath && (await remove(mutagenTmpSymlinkPath))
+    }
   }
 
   activeSyncs = {}
@@ -91,7 +111,7 @@ function stopDaemonProc() {
   } catch {}
 }
 
-export async function ensureMutagenDaemon(log: LogEntry) {
+export async function ensureMutagenDaemon(ctx: PluginContext, log: LogEntry) {
   return mutagenConfigLock.acquire("start-daemon", async () => {
     if (!mutagenTmp) {
       mutagenTmp = await makeTempDir()
@@ -99,6 +119,7 @@ export async function ensureMutagenDaemon(log: LogEntry) {
 
     const dataDir = mutagenTmp.path
 
+    // Return if already running
     if (daemonProc && daemonProc.status === "running") {
       return dataDir
     }
@@ -106,6 +127,34 @@ export async function ensureMutagenDaemon(log: LogEntry) {
     const mutagenPath = await mutagen.getPath(log)
 
     await mkdirp(dataDir)
+
+    // For convenience while troubleshooting, place a symlink to the temp directory under .garden/mutagen
+    const mutagenDir = join(ctx.gardenDirPath, "mutagen")
+    await mkdirp(mutagenDir)
+    mutagenTmpSymlinkPath = join(mutagenDir, ctx.sessionId)
+    const latestSymlinkPath = join(mutagenDir, "latest")
+
+    try {
+      await ensureSymlink(dataDir, mutagenTmpSymlinkPath, "dir")
+
+      // Also, write a quick script to the data directory to make it easier to work with
+      const scriptPath = join(dataDir, "mutagen.sh")
+      await writeFile(
+        scriptPath,
+        dedent`
+          #!/bin/sh
+          export MUTAGEN_DATA_DIRECTORY='${dataDir}'
+          export MUTAGEN_LOG_LEVEL=debug
+          ${mutagenPath} "$@"
+        `
+      )
+      await chmod(scriptPath, 0o755)
+
+      // Always keep a "latest" link for convenience
+      await ensureSymlink(dataDir, latestSymlinkPath)
+    } catch (err) {
+      log.debug({ symbol: "warning", msg: `Unable to symlink mutagen data directory: ${err}` })
+    }
 
     daemonProc = respawn([mutagenPath, "daemon", "run"], {
       cwd: dataDir,
@@ -120,8 +169,6 @@ export async function ensureMutagenDaemon(log: LogEntry) {
       stdio: "pipe",
       fork: false,
     })
-
-    const crashMessage = `Synchronization daemon has crashed ${maxRestarts} times. Aborting.`
 
     daemonProc.on("crash", () => {
       log.warn(chalk.yellow(crashMessage))
@@ -145,8 +192,10 @@ export async function ensureMutagenDaemon(log: LogEntry) {
       // This is a little dumb, to detect if the log line starts with a timestamp, but ya know...
       // it'll basically work for the next 979 years :P.
       const msg = chalk.gray(str.startsWith("2") ? str.split(" ").slice(3).join(" ") : str)
-      if (msg.includes("Unable")) {
+      if (msg.includes("Unable") && lastDaemonError !== msg) {
         log.warn({ symbol: "warning", section: mutagenLogSection, msg })
+        // Make sure we don't spam with repeated messages
+        lastDaemonError = msg
       } else {
         log.silly({ symbol: "empty", section: mutagenLogSection, msg })
       }
@@ -188,8 +237,8 @@ export async function ensureMutagenDaemon(log: LogEntry) {
   })
 }
 
-export async function execMutagenCommand(log: LogEntry, args: string[]) {
-  let dataDir = await ensureMutagenDaemon(log)
+export async function execMutagenCommand(ctx: PluginContext, log: LogEntry, args: string[]) {
+  let dataDir = await ensureMutagenDaemon(ctx, log)
 
   let loops = 0
   const maxRetries = 10
@@ -203,9 +252,10 @@ export async function execMutagenCommand(log: LogEntry, args: string[]) {
         log,
         env: {
           MUTAGEN_DATA_DIRECTORY: dataDir,
+          MUTAGEN_DISABLE_AUTOSTART: "1",
         },
       })
-      startMutagenMonitor(log)
+      startMutagenMonitor(ctx, log)
       return res
     } catch (err) {
       const unableToConnect = err.message.match(/unable to connect to daemon/)
@@ -221,7 +271,7 @@ export async function execMutagenCommand(log: LogEntry, args: string[]) {
         }
         await killSyncDaemon(false)
         await sleep(2000 + loops * 500)
-        dataDir = await ensureMutagenDaemon(log)
+        dataDir = await ensureMutagenDaemon(ctx, log)
       } else {
         throw err
       }
@@ -229,75 +279,109 @@ export async function execMutagenCommand(log: LogEntry, args: string[]) {
   }
 }
 
-interface ScanProblem {
+interface SyncProblem {
   path: string
   error: string
 }
 
-interface ConflictChange {
+interface SyncEntry {
+  kind: string
+  // TODO: Add contents for directory entries
+  digest?: string
+  executable?: boolean
+  target?: string
+  problem?: string
+}
+
+interface SyncChange {
   path: string
-  new?: {
-    kind: number
-    digest?: string
-    target?: string
-    executable?: boolean
-  }
+  old?: SyncEntry
+  new?: SyncEntry
 }
 
 interface SyncConflict {
   root: string
-  alphaChanges?: ConflictChange[]
-  betaChanges?: ConflictChange[]
+  alphaChanges: SyncChange[]
+  betaChanges: SyncChange[]
 }
 
-interface SyncListEntry {
-  session: {
-    identifier: string
-    version: number
-    creationTime: {
-      seconds: number
-      nanos: number
-    }
-    creatingVersionMinor: number
-    alpha: {
-      path: string
-    }
-    beta: {
-      path: string
-    }
-    configuration: {
-      synchronizationMode: number
-    }
-    configurationAlpha: any
-    configurationBeta: any
-    name: string
-    paused?: boolean
-  }
-  status?: number
-  alphaConnected?: boolean
-  betaConnected?: boolean
-  alphaScanProblems?: ScanProblem[]
-  betaScanProblems?: ScanProblem[]
-  successfulSynchronizationCycles?: number
+interface SyncReceiverStatus {
+  path: string
+  receivedSize: number
+  expectedSize: number
+  receivedFiles: number
+  expectedFiles: number
+  totalReceivedSize: number
+}
+
+interface SyncEndpoint {
+  protocol: string // Only used for remote endpoints
+  user?: string // Only used for remote endpoints
+  host?: string // Only used for remote endpoints
+  port?: number // Only used for remote endpoints
+  path: string
+  // TODO: Add environment variables
+  // TODO: Add parameter variables
+  // TODO: Add endpoint-specific configuration
+  connected: boolean
+  scanned?: boolean
+  directories?: number
+  files?: number
+  symbolicLinks?: number
+  totalFileSize?: number
+  scanProblems?: SyncProblem[]
+  excludedScanProblems?: number
+  transitionProblems?: SyncProblem[]
+  excludedTransitionProblems?: number
+  stagingProgress?: SyncReceiverStatus
+}
+
+interface SyncSession {
+  identifier: string
+  version: number
+  creationTime: string
+  creatingVersion: string
+  alpha: SyncEndpoint
+  beta: SyncEndpoint
+  mode: string
+  // TODO: Add additional configuration parameters
+  name: string // TODO: This is technically an optional field
+  // TODO: Add labels
+  paused: boolean
+  status?: string
+  lastError?: string
+  successfulCycles?: number
   conflicts?: SyncConflict[]
   excludedConflicts?: number
 }
 
 let monitorInterval: NodeJS.Timeout
 
-function checkMutagen(log: LogEntry) {
-  getActiveMutagenSyncs(log)
-    .then((syncs) => {
-      for (const sync of syncs) {
-        const problems: string[] = [
-          ...(sync.alphaScanProblems || []).map((p) => `Error scanning sync source, path ${p.path}: ${p.error}`),
-          ...(sync.betaScanProblems || []).map((p) => `Error scanning sync target, path ${p.path}: ${p.error}`),
-        ]
+const syncStatusLines: { [sessionName: string]: LogEntry } = {}
 
-        const activeSync = activeSyncs[sync.session.name]
+function checkMutagen(ctx: PluginContext, log: LogEntry) {
+  getActiveMutagenSyncSessions(ctx, log)
+    .then((sessions) => {
+      for (const session of sessions) {
+        const sessionName = session.name
+        const activeSync = activeSyncs[sessionName]
         if (!activeSync) {
           continue
         }
+
+        const { sourceDescription, targetDescription } = activeSync
+
+        const problems: string[] = [
+          ...(session.alpha.scanProblems || []).map((p) => `Error scanning sync source, path ${p.path}: ${p.error}`),
+          ...(session.beta.scanProblems || []).map((p) => `Error scanning sync target, path ${p.path}: ${p.error}`),
+          ...(session.alpha.transitionProblems || []).map(
+            (p) => `Error transitioning sync source, path ${p.path}: ${p.error}`
+          ),
+          ...(session.beta.transitionProblems || []).map(
+            (p) => `Error transitioning sync target, path ${p.path}: ${p.error}`
+          ),
+          ...(session.conflicts || []).map((c) => formatSyncConflict(sourceDescription, targetDescription, c)),
+        ]
 
         const { logSection: section } = activeSync
 
@@ -307,26 +391,26 @@ function checkMutagen(log: LogEntry) {
           }
         }
 
-        if (sync.alphaConnected && !activeSync.sourceConnected) {
+        if (session.alpha.connected && !activeSync.sourceConnected) {
           log.info({
             symbol: "info",
             section,
-            msg: chalk.gray(`Connected to sync source ${activeSync.sourceDescription}`),
+            msg: chalk.gray(`Connected to sync source ${sourceDescription}`),
           })
           activeSync.sourceConnected = true
         }
 
-        if (sync.betaConnected && !activeSync.targetConnected) {
+        if (session.beta.connected && !activeSync.targetConnected) {
           log.info({
             symbol: "success",
             section,
-            msg: chalk.gray(`Connected to sync target ${activeSync.targetDescription}`),
+            msg: chalk.gray(`Connected to sync target ${targetDescription}`),
           })
           activeSync.targetConnected = true
         }
 
-        const syncCount = sync.successfulSynchronizationCycles || 0
-        const description = `from ${activeSync.sourceDescription} to ${activeSync.targetDescription}`
+        const syncCount = session.successfulCycles || 0
+        const description = `from ${sourceDescription} to ${targetDescription}`
 
         if (syncCount > activeSync.lastSyncCount) {
           if (activeSync.lastSyncCount === 0) {
@@ -336,12 +420,20 @@ function checkMutagen(log: LogEntry) {
               msg: chalk.gray(`Completed initial sync ${description}`),
             })
           } else {
-            log.info({ symbol: "info", section, msg: chalk.gray(`Synchronized ${description}`) })
+            if (!syncStatusLines[sessionName]) {
+              syncStatusLines[sessionName] = log.info("").placeholder()
+            }
+            const time = new Date().toLocaleTimeString()
+            syncStatusLines[sessionName].setState({
+              symbol: "info",
+              section,
+              msg: chalk.gray(`Synchronized ${description} at ${time}`),
+            })
           }
+          activeSync.lastSyncCount = syncCount
         }
 
         activeSync.lastProblems = problems
-        activeSync.lastSyncCount = syncCount
       }
     })
     .catch((err) => {
@@ -353,20 +445,20 @@ function checkMutagen(log: LogEntry) {
     })
 }
 
-export function startMutagenMonitor(log: LogEntry) {
+export function startMutagenMonitor(ctx: PluginContext, log: LogEntry) {
   if (!monitorInterval) {
-    monitorInterval = setInterval(() => checkMutagen(log), monitorDelay)
+    monitorInterval = setInterval(() => checkMutagen(ctx, log), monitorDelay)
   }
 }
 
 /**
  * List the currently active syncs in the mutagen daemon.
  */
-export async function getActiveMutagenSyncs(log: LogEntry): Promise<SyncListEntry[]> {
-  const res = await execMutagenCommand(log, ["sync", "list", "--output=json", "--auto-start=false"])
+export async function getActiveMutagenSyncSessions(ctx: PluginContext, log: LogEntry): Promise<SyncSession[]> {
+  const res = await execMutagenCommand(ctx, log, ["sync", "list", "--template={{ json . }}"])
 
   // TODO: validate further
-  let parsed: any = {}
+  let parsed: any = []
 
   try {
     parsed = JSON.parse(res.stdout)
@@ -374,11 +466,11 @@ export async function getActiveMutagenSyncs(log: LogEntry): Promise<SyncListEntr
     throw new MutagenError(`Could not parse response from mutagen sync list: ${res.stdout}`, { res })
   }
 
-  if (!parsed.sessions) {
+  if (!Array.isArray(parsed)) {
     throw new MutagenError(`Unexpected response from mutagen sync list: ${parsed}`, { res, parsed })
   }
 
-  return parsed.sessions
+  return parsed
 }
 
 /**
@@ -386,6 +478,7 @@ export async function getActiveMutagenSyncs(log: LogEntry): Promise<SyncListEntr
  * (When configuration changes, the whole daemon is reset).
  */
 export async function ensureMutagenSync({
+  ctx,
   log,
   logSection,
   key,
@@ -393,6 +486,7 @@ export async function ensureMutagenSync({
   targetDescription,
   config,
 }: {
+  ctx: PluginContext
   log: LogEntry
   logSection: string
   key: string
@@ -405,15 +499,15 @@ export async function ensureMutagenSync({
   }
 
   return mutagenConfigLock.acquire("configure", async () => {
-    const active = await getActiveMutagenSyncs(log)
-    const existing = active.find((s: any) => s.name === key)
+    const active = await getActiveMutagenSyncSessions(ctx, log)
+    const existing = active.find((s) => s.name === key)
 
     if (!existing) {
       const { alpha, beta, ignore, mode, defaultOwner, defaultGroup, defaultDirectoryMode, defaultFileMode } = config
 
       const ignoreFlags = ignore.flatMap((i) => ["-i", i])
       const syncMode = mutagenModeMap[mode]
-      const params = [alpha, beta, "--name", key, "--auto-start=false", "--sync-mode", syncMode, ...ignoreFlags]
+      const params = [alpha, beta, "--name", key, "--sync-mode", syncMode, ...ignoreFlags]
 
       if (defaultOwner) {
         params.push("--default-owner", defaultOwner.toString())
@@ -429,7 +523,7 @@ export async function ensureMutagenSync({
       }
 
       // Might need to retry
-      await pRetry(() => execMutagenCommand(log, ["sync", "create", ...params]), {
+      await pRetry(() => execMutagenCommand(ctx, log, ["sync", "create", ...params]), {
         retries: 5,
         minTimeout: 1000,
         onFailedAttempt: (err) => {
@@ -440,6 +534,7 @@ export async function ensureMutagenSync({
       })
 
       activeSyncs[key] = {
+        created: new Date(),
         sourceDescription,
         targetDescription,
         logSection,
@@ -457,10 +552,12 @@ export async function ensureMutagenSync({
 /**
  * Remove the specified sync (by name) from the sync daemon.
  */
-export async function terminateMutagenSync(log: LogEntry, key: string) {
+export async function terminateMutagenSync(ctx: PluginContext, log: LogEntry, key: string) {
+  log.debug(`Terminating mutagen sync ${key}`)
+
   return mutagenConfigLock.acquire("configure", async () => {
     try {
-      await execMutagenCommand(log, ["sync", "delete", key, "--auto-start=false"])
+      await execMutagenCommand(ctx, log, ["sync", "terminate", key])
       delete activeSyncs[key]
     } catch (err) {
       // Ignore other errors, which should mean the sync wasn't found
@@ -471,10 +568,24 @@ export async function terminateMutagenSync(log: LogEntry, key: string) {
   })
 }
 /**
- * Remove the specified sync (by name) from the sync daemon.
+ * Ensure a sync is completed.
  */
-export async function flushMutagenSync(log: LogEntry, key: string) {
-  await execMutagenCommand(log, ["sync", "flush", key, "--auto-start=false"])
+export async function flushMutagenSync(ctx: PluginContext, log: LogEntry, key: string) {
+  await execMutagenCommand(ctx, log, ["sync", "flush", key])
+}
+
+/**
+ * Ensure all active syncs are completed.
+ */
+export async function flushAllMutagenSyncs(ctx: PluginContext, log: LogEntry) {
+  const active = await getActiveMutagenSyncSessions(ctx, log)
+  await Bluebird.map(active, async (session) => {
+    try {
+      await flushMutagenSync(ctx, log, session.name)
+    } catch (err) {
+      log.warn(chalk.yellow(`Failed to flush sync '${session.name}: ${err.message}`))
+    }
+  })
 }
 
 export async function getKubectlExecDestination({
@@ -526,8 +637,19 @@ export const mutagenCliSpec: PluginToolSpec = {
       platform: "darwin",
       architecture: "amd64",
       url:
-        "https://github.com/garden-io/mutagen/releases/download/v0.12.0-garden-alpha2/mutagen_darwin_amd64_v0.12.0-beta3.tar.gz",
-      sha256: "e31cebb5c4cbd1a1320e56b111416389e9eed911233b40c93801547c1eec0563",
+        "https://github.com/garden-io/mutagen/releases/download/v0.15.0-garden-1/mutagen_darwin_amd64_v0.15.0.tar.gz",
+      sha256: "370bf71e28f94002453921fda83282280162df7192bd07042bf622bf54507e3f",
+      extract: {
+        format: "tar",
+        targetPath: "mutagen",
+      },
+    },
+    {
+      platform: "darwin",
+      architecture: "arm64",
+      url:
+        "https://github.com/garden-io/mutagen/releases/download/v0.15.0-garden-1/mutagen_darwin_arm64_v0.15.0.tar.gz",
+      sha256: "a0a7be8bb37266ea184cb580004e1741a17c8165b2032ce4b191f23fead821a0",
       extract: {
         format: "tar",
         targetPath: "mutagen",
@@ -536,9 +658,8 @@ export const mutagenCliSpec: PluginToolSpec = {
     {
       platform: "linux",
       architecture: "amd64",
-      url:
-        "https://github.com/garden-io/mutagen/releases/download/v0.12.0-garden-alpha2/mutagen_linux_amd64_v0.12.0-beta3.tar.gz",
-      sha256: "09a0dbccbbd784324707ba12002a6bc90395f0cd73daab83d6cda7432b4973f3",
+      url: "https://github.com/garden-io/mutagen/releases/download/v0.15.0-garden-1/mutagen_linux_amd64_v0.15.0.tar.gz",
+      sha256: "e8c0708258ddd6d574f1b8f514fb214f9ab5d82aed38dd8db49ec10956e5063a",
       extract: {
         format: "tar",
         targetPath: "mutagen",
@@ -547,9 +668,8 @@ export const mutagenCliSpec: PluginToolSpec = {
     {
       platform: "windows",
       architecture: "amd64",
-      url:
-        "https://github.com/garden-io/mutagen/releases/download/v0.12.0-garden-alpha2/mutagen_windows_amd64_v0.12.0-beta3.zip",
-      sha256: "9482646380a443b72aa38b3569c71c73d91ddde7c57a10de3d48b0b727cb8bff",
+      url: "https://github.com/garden-io/mutagen/releases/download/v0.15.0-garden-1/mutagen_windows_amd64_v0.15.0.zip",
+      sha256: "fdae26b43cc418b2525a937a1613bba36e74ea3dde4dbec3512a9abd004def95",
       extract: {
         format: "zip",
         targetPath: "mutagen.exe",
@@ -565,6 +685,21 @@ const mutagen = new PluginTool(mutagenCliSpec)
  */
 async function isValidLocalPath(syncPoint: string) {
   return pathExists(syncPoint)
+}
+
+function formatSyncConflict(sourceDescription: string, targetDescription: string, conflict: SyncConflict): string {
+  return dedent`
+    Sync conflict detected at path ${chalk.white(
+      conflict.root
+    )} in sync from ${sourceDescription} to ${targetDescription}.
+
+    Until the conflict is resolved, the conflicting paths will not be synced.
+
+    If conflicts come up regularly at this destination, you may want to use either the ${chalk.white(
+      "one-way-replica"
+    )} or ${chalk.white("one-way-replica-reverse")} sync modes instead.
+
+    See the code synchronization guide for more details: ${chalk.white(devModeGuideLink + "#sync-modes")}`
 }
 
 /**

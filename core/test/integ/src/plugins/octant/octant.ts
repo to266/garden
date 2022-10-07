@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,14 +8,14 @@
 
 import { defaultNamespace } from "../../../../../src/config/project"
 import { DEFAULT_API_VERSION } from "../../../../../src/constants"
-import { projectRootA, TestGarden } from "../../../../helpers"
+import { makeTestGarden, projectRootA } from "../../../../helpers"
 import { expect } from "chai"
 import { got } from "../../../../../src/util/http"
 
 describe("octant provider", () => {
   describe("getDashboardPage", () => {
     it("should start an octant process and return a URL to it", async () => {
-      const garden = await TestGarden.factory(projectRootA, {
+      const garden = await makeTestGarden(projectRootA, {
         config: {
           apiVersion: DEFAULT_API_VERSION,
           kind: "Project",

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -30,6 +30,7 @@ export interface TaskTaskParams {
   forceBuild: boolean
   devModeServiceNames: string[]
   hotReloadServiceNames: string[]
+  localModeServiceNames: string[]
 }
 
 class RunTaskError extends Error {
@@ -42,12 +43,12 @@ class RunTaskError extends Error {
 export class TaskTask extends BaseTask {
   // ... to be renamed soon.
   type: TaskType = "task"
-
-  private graph: ConfigGraph
-  private task: GardenTask
-  private forceBuild: boolean
-  private devModeServiceNames: string[]
-  private hotReloadServiceNames: string[]
+  graph: ConfigGraph
+  task: GardenTask
+  forceBuild: boolean
+  devModeServiceNames: string[]
+  hotReloadServiceNames: string[]
+  localModeServiceNames: string[]
 
   constructor({
     garden,
@@ -58,6 +59,7 @@ export class TaskTask extends BaseTask {
     forceBuild,
     devModeServiceNames,
     hotReloadServiceNames,
+    localModeServiceNames,
   }: TaskTaskParams) {
     super({ garden, log, force, version: task.version })
     this.graph = graph
@@ -66,6 +68,7 @@ export class TaskTask extends BaseTask {
     this.forceBuild = forceBuild
     this.devModeServiceNames = devModeServiceNames
     this.hotReloadServiceNames = hotReloadServiceNames
+    this.localModeServiceNames = localModeServiceNames
   }
 
   async resolveDependencies(): Promise<BaseTask[]> {
@@ -89,6 +92,7 @@ export class TaskTask extends BaseTask {
         forceBuild: false,
         devModeServiceNames: this.devModeServiceNames,
         hotReloadServiceNames: this.hotReloadServiceNames,
+        localModeServiceNames: this.localModeServiceNames,
       })
     })
 
@@ -102,6 +106,7 @@ export class TaskTask extends BaseTask {
         forceBuild: false,
         devModeServiceNames: this.devModeServiceNames,
         hotReloadServiceNames: this.hotReloadServiceNames,
+        localModeServiceNames: this.localModeServiceNames,
       })
     })
 

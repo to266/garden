@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -19,7 +19,7 @@ let octantPort: number
 export const gardenPlugin = () =>
   createGardenPlugin({
     name: "octant",
-    dependencies: ["kubernetes"],
+    dependencies: [{ name: "kubernetes" }],
     docs: dedent`
     Adds [Octant](https://github.com/vmware-tanzu/octant) to the Garden dashboard, as well as a \`garden tools octant\` command.
   `,
@@ -87,6 +87,7 @@ export const gardenPlugin = () =>
         type: "binary",
         _includeInGardenImage: false,
         builds: [
+          // this version has no arm support yet. If you add a later release, please add the "arm64" architecture.
           {
             platform: "darwin",
             architecture: "amd64",

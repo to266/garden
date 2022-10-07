@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,11 +9,11 @@
 import execa = require("execa")
 import { expect } from "chai"
 import tmp from "tmp-promise"
-import { createFile, writeFile, realpath, mkdir, remove, symlink, ensureSymlink, lstat } from "fs-extra"
-import { join, resolve, basename, relative } from "path"
+import { createFile, ensureSymlink, lstat, mkdir, mkdirp, realpath, remove, symlink, writeFile } from "fs-extra"
+import { basename, join, relative, resolve } from "path"
 
 import { expectError, makeTestGardenA, TestGarden } from "../../../helpers"
-import { getCommitIdFromRefList, parseGitUrl, GitHandler } from "../../../../src/vcs/git"
+import { getCommitIdFromRefList, GitHandler, parseGitUrl } from "../../../../src/vcs/git"
 import { LogEntry } from "../../../../src/logger/log-entry"
 import { hashRepoUrl } from "../../../../src/util/ext-source-util"
 import { deline } from "../../../../src/util/string"
@@ -28,7 +28,7 @@ async function getCommitMsg(repoPath: string) {
 }
 
 async function commit(msg: string, repoPath: string) {
-  // Ensure master contains changes when commiting
+  // Ensure main contains changes when committing
   const uniqueFilename = `${uuidv4()}.txt`
   const filePath = join(repoPath, uniqueFilename)
   await createFile(filePath)
@@ -40,7 +40,7 @@ async function commit(msg: string, repoPath: string) {
 async function makeTempGitRepo() {
   const tmpDir = await tmp.dir({ unsafeCleanup: true })
   const tmpPath = await realpath(tmpDir.path)
-  await execa("git", ["init"], { cwd: tmpPath })
+  await execa("git", ["init", "--initial-branch=main"], { cwd: tmpPath })
 
   return tmpDir
 }
@@ -73,6 +73,28 @@ describe("GitHandler", () => {
     await tmpDir.cleanup()
   })
 
+  async function getGitHash(path: string) {
+    return (await git("hash-object", path))[0]
+  }
+
+  describe("toGitConfigCompatiblePath", () => {
+    it("should return an unmodified path in Linux", async () => {
+      const path = "/home/user/repo"
+      expect(handler.toGitConfigCompatiblePath(path, "linux")).to.equal(path)
+    })
+
+    it("should return an unmodified path in macOS", async () => {
+      const path = "/Users/user/repo"
+      expect(handler.toGitConfigCompatiblePath(path, "darwin")).to.equal(path)
+    })
+
+    it("should return a modified and corrected path in Windows", async () => {
+      const path = "C:\\Users\\user\\repo"
+      const expectedPath = "C:/Users/user/repo"
+      expect(handler.toGitConfigCompatiblePath(path, "win32")).to.equal(expectedPath)
+    })
+  })
+
   describe("getRepoRoot", () => {
     it("should return the repo root if it is the same as the given path", async () => {
       const path = tmpPath
@@ -98,20 +120,27 @@ describe("GitHandler", () => {
     })
   })
 
-  describe("getBranchName", () => {
-    it("should return undefined with no commits in repo", async () => {
+  describe("getPathInfo", () => {
+    it("should return empty strings with no commits in repo", async () => {
       const path = tmpPath
-      expect(await handler.getBranchName(log, path)).to.equal(undefined)
+      const { branch, commitHash } = await handler.getPathInfo(log, path)
+      expect(branch).to.equal("")
+      expect(commitHash).to.equal("")
     })
 
     it("should return the current branch name when there are commits in the repo", async () => {
       const path = tmpPath
       await commit("init", tmpPath)
-      expect(await handler.getBranchName(log, path)).to.equal("master")
+      const { branch } = await handler.getPathInfo(log, path)
+      expect(branch).to.equal("main")
     })
 
-    it("should return undefined when given a path outside of a repo", async () => {
-      expect(await handler.getBranchName(log, "/tmp")).to.equal(undefined)
+    it("should return empty strings when given a path outside of a repo", async () => {
+      const path = tmpPath
+      const { branch, commitHash, originUrl } = await handler.getPathInfo(log, path)
+      expect(branch).to.equal("")
+      expect(commitHash).to.equal("")
+      expect(originUrl).to.equal("")
     })
   })
 
@@ -128,7 +157,7 @@ describe("GitHandler", () => {
       await git("add", ".")
       await git("commit", "-m", "foo")
 
-      const hash = "6e1ab2d7d26c1c66f27fea8c136e13c914e3f137"
+      const hash = await getGitHash(path)
 
       expect(await handler.getFiles({ path: tmpPath, log })).to.eql([{ path, hash }])
     })
@@ -141,7 +170,8 @@ describe("GitHandler", () => {
       await git("commit", "-m", "foo")
 
       await writeFile(path, "my change")
-      const hash = "6e1ab2d7d26c1c66f27fea8c136e13c914e3f137"
+
+      const hash = await getGitHash(path)
 
       expect(await handler.getFiles({ path: tmpPath, log })).to.eql([{ path, hash }])
     })
@@ -173,44 +203,49 @@ describe("GitHandler", () => {
 
         it("should return untracked files as absolute paths with hash", async () => {
           const dirPath = pathFn(tmpPath)
-          await createFile(join(dirPath, "foo.txt"))
-          const hash = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+          const path = join(dirPath, "foo.txt")
+          await createFile(path)
 
-          expect(await handler.getFiles({ path: dirPath, log })).to.eql([{ path: resolve(dirPath, "foo.txt"), hash }])
+          const hash = await getGitHash(path)
+
+          expect(await handler.getFiles({ path: dirPath, log })).to.eql([{ path, hash }])
         })
       })
     }
 
     it("should return untracked files in untracked directory", async () => {
       const dirPath = join(tmpPath, "dir")
+      const path = join(dirPath, "file.txt")
       await mkdir(dirPath)
-      await createFile(join(dirPath, "file.txt"))
-      const hash = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+      await createFile(path)
 
-      expect(await handler.getFiles({ path: dirPath, log })).to.eql([{ path: resolve(dirPath, "file.txt"), hash }])
+      const hash = await getGitHash(path)
+
+      expect(await handler.getFiles({ path: dirPath, log })).to.eql([{ path, hash }])
     })
 
     it("should work with tracked files with spaces in the name", async () => {
-      const filePath = join(tmpPath, "my file.txt")
-      await createFile(filePath)
-      await git("add", filePath)
+      const path = join(tmpPath, "my file.txt")
+      await createFile(path)
+      await git("add", path)
       await git("commit", "-m", "foo")
-      const hash = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 
-      expect(await handler.getFiles({ path: tmpPath, log })).to.eql([{ path: resolve(tmpPath, "my file.txt"), hash }])
+      const hash = await getGitHash(path)
+
+      expect(await handler.getFiles({ path: tmpPath, log })).to.eql([{ path, hash }])
     })
 
     it("should work with tracked+modified files with spaces in the name", async () => {
-      const filePath = join(tmpPath, "my file.txt")
-      await createFile(filePath)
-      await git("add", filePath)
+      const path = join(tmpPath, "my file.txt")
+      await createFile(path)
+      await git("add", path)
       await git("commit", "-m", "foo")
 
-      await writeFile(filePath, "fooooo")
+      await writeFile(path, "fooooo")
 
-      const hash = "099673697c6cbf5c1a96c445ef3eab123740c778"
+      const hash = await getGitHash(path)
 
-      expect(await handler.getFiles({ path: tmpPath, log })).to.eql([{ path: resolve(tmpPath, "my file.txt"), hash }])
+      expect(await handler.getFiles({ path: tmpPath, log })).to.eql([{ path, hash }])
     })
 
     it("should gracefully skip files that are deleted after having been committed", async () => {
@@ -225,11 +260,12 @@ describe("GitHandler", () => {
     })
 
     it("should work with untracked files with spaces in the name", async () => {
-      const filePath = join(tmpPath, "my file.txt")
-      await createFile(filePath)
-      const hash = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+      const path = join(tmpPath, "my file.txt")
+      await createFile(path)
 
-      expect(await handler.getFiles({ path: tmpPath, log })).to.eql([{ path: resolve(tmpPath, "my file.txt"), hash }])
+      const hash = await getGitHash(path)
+
+      expect(await handler.getFiles({ path: tmpPath, log })).to.eql([{ path, hash }])
     })
 
     it("should return nothing if include: []", async () => {
@@ -248,8 +284,8 @@ describe("GitHandler", () => {
 
     it("should include files that match the include filter, if specified", async () => {
       const path = resolve(tmpPath, "foo.txt")
-      const hash = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
       await createFile(path)
+      const hash = await getGitHash(path)
 
       expect(await handler.getFiles({ path: tmpPath, include: ["foo.*"], exclude: [], log })).to.eql([{ path, hash }])
     })
@@ -259,8 +295,8 @@ describe("GitHandler", () => {
       const subdir = resolve(tmpPath, subdirName)
       await mkdir(subdir)
       const path = resolve(tmpPath, subdirName, "foo.txt")
-      const hash = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
       await createFile(path)
+      const hash = await getGitHash(path)
 
       expect(await handler.getFiles({ path: tmpPath, include: [subdirName], exclude: [], log })).to.eql([
         { path, hash },
@@ -269,8 +305,8 @@ describe("GitHandler", () => {
 
     it("should include hidden files that match the include filter, if specified", async () => {
       const path = resolve(tmpPath, ".foo")
-      const hash = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
       await createFile(path)
+      const hash = await getGitHash(path)
 
       expect(await handler.getFiles({ path: tmpPath, include: ["*"], exclude: [], log })).to.eql([{ path, hash }])
     })
@@ -341,7 +377,7 @@ describe("GitHandler", () => {
       await git("add", ".")
       await git("commit", "-m", "foo")
 
-      const hash = "6e1ab2d7d26c1c66f27fea8c136e13c914e3f137"
+      const hash = await getGitHash(path)
 
       const _handler = new GitHandler(tmpPath, join(tmpPath, ".garden"), [], garden.cache)
 
@@ -452,7 +488,7 @@ describe("GitHandler", () => {
         submodulePath = await realpath(submodule.path)
         initFile = await commit("init", submodulePath)
 
-        await execa("git", ["submodule", "add", submodulePath, "sub", "--force"], { cwd: tmpPath })
+        await execa("git", ["submodule", "add", "--force", "--", submodulePath, "sub"], { cwd: tmpPath })
         await execa("git", ["commit", "-m", "add submodule"], { cwd: tmpPath })
       })
 
@@ -465,6 +501,23 @@ describe("GitHandler", () => {
         const paths = files.map((f) => relative(tmpPath, f.path))
 
         expect(paths).to.eql([".gitmodules", join("sub", initFile)])
+      })
+
+      it("should work if submodule is not initialized and not include any files", async () => {
+        await execa("git", ["submodule", "deinit", "--all"], { cwd: tmpPath })
+        const files = await handler.getFiles({ path: tmpPath, log })
+        const paths = files.map((f) => relative(tmpPath, f.path))
+
+        expect(paths).to.eql([".gitmodules", "sub"])
+      })
+
+      it("should work if submodule is initialized but not updated", async () => {
+        await execa("git", ["submodule", "deinit", "--all"], { cwd: tmpPath })
+        await execa("git", ["submodule", "init"], { cwd: tmpPath })
+        const files = await handler.getFiles({ path: tmpPath, log })
+        const paths = files.map((f) => relative(tmpPath, f.path))
+
+        expect(paths).to.eql([".gitmodules", "sub"])
       })
 
       it("should include tracked files in submodules when multiple dotignore files are set", async () => {
@@ -630,9 +683,18 @@ describe("GitHandler", () => {
       await writeFile(path, "iogjeiojgeowigjewoijoeiw")
       const stats = await lstat(path)
 
-      const expected = (await git("hash-object", path))[0]
+      const expected = await getGitHash(path)
 
-      expect(await handler.hashObject(stats, path)).to.equal(expected)
+      return new Promise((_resolve, reject) => {
+        handler.hashObject(stats, path, (err, hash) => {
+          if (err) {
+            reject(err)
+          } else {
+            expect(hash).to.equal(expected)
+            _resolve()
+          }
+        })
+      })
     })
 
     it("should return the same result as `git ls-files` for a file", async () => {
@@ -645,7 +707,16 @@ describe("GitHandler", () => {
       const files = (await git("ls-files", "-s", path))[0]
       const expected = files.split(" ")[1]
 
-      expect(await handler.hashObject(stats, path)).to.equal(expected)
+      return new Promise((_resolve, reject) => {
+        handler.hashObject(stats, path, (err, hash) => {
+          if (err) {
+            reject(err)
+          } else {
+            expect(hash).to.equal(expected)
+            _resolve()
+          }
+        })
+      })
     })
 
     it("should return the same result as `git ls-files` for a symlink", async () => {
@@ -662,7 +733,16 @@ describe("GitHandler", () => {
       const files = (await git("ls-files", "-s", symlinkPath))[0]
       const expected = files.split(" ")[1]
 
-      expect(await handler.hashObject(stats, symlinkPath)).to.equal(expected)
+      return new Promise((_resolve, reject) => {
+        handler.hashObject(stats, symlinkPath, (err, hash) => {
+          if (err) {
+            reject(err)
+          } else {
+            expect(hash).to.equal(expected)
+            _resolve()
+          }
+        })
+      })
     })
   })
 
@@ -684,7 +764,7 @@ describe("GitHandler", () => {
       tmpRepoPathA = await realpath(tmpRepoA.path)
       await commit("test commit A", tmpRepoPathA)
 
-      repositoryUrlA = `file://${tmpRepoPathA}#master`
+      repositoryUrlA = `file://${tmpRepoPathA}#main`
 
       tmpRepoB = await makeTempGitRepo()
       tmpRepoPathB = await realpath(tmpRepoB.path)
@@ -811,6 +891,30 @@ describe("GitHandler", () => {
 
         expect(await getCommitMsg(clonePath)).to.eql("new commit")
       })
+
+      it("should exit on `failOnPrompt` when updating a remote source and prompting for user input", async () => {
+        await mkdirp(clonePath)
+        await execa("git", ["init", "--initial-branch=main"], { cwd: clonePath })
+        await execa("git", ["commit", "-m", "commit", "--allow-empty"], { cwd: clonePath })
+        await execa("git", ["remote", "add", "origin", "https://fake@github.com/private/private.git"], {
+          cwd: clonePath,
+        })
+        let error: Error | undefined
+        try {
+          await handler.updateRemoteSource({
+            url: repositoryUrlA,
+            name: "foo",
+            sourceType: "module",
+            log,
+            failOnPrompt: true,
+          })
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(Error)
+        expect(error?.message).to.contain("Invalid username or password.")
+      })
+
       it("should update submodules", async () => {
         // Add repo B as a submodule to repo A
         await execa("git", ["submodule", "add", tmpRepoPathB], { cwd: tmpRepoPathA })
@@ -863,15 +967,15 @@ describe("GitHandler", () => {
 describe("git", () => {
   describe("getCommitIdFromRefList", () => {
     it("should get the commit id from a list of commit ids and refs", () => {
-      const refList = ["abcde	ref/heads/master", "1234	ref/heads/master", "foobar	ref/heads/master"]
+      const refList = ["abcde	ref/heads/main", "1234	ref/heads/main", "foobar	ref/heads/main"]
       expect(getCommitIdFromRefList(refList)).to.equal("abcde")
     })
     it("should get the commit id from a list of commit ids without refs", () => {
-      const refList = ["abcde", "1234	ref/heads/master", "foobar	ref/heads/master"]
+      const refList = ["abcde", "1234	ref/heads/main", "foobar	ref/heads/main"]
       expect(getCommitIdFromRefList(refList)).to.equal("abcde")
     })
     it("should get the commit id from a single commit id / ref pair", () => {
-      const refList = ["abcde	ref/heads/master"]
+      const refList = ["abcde	ref/heads/main"]
       expect(getCommitIdFromRefList(refList)).to.equal("abcde")
     })
     it("should get the commit id from single commit id without a ref", () => {

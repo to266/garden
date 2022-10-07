@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -23,7 +23,7 @@ describe("CreateProjectCommand", () => {
 
   beforeEach(async () => {
     tmp = await makeTempDir()
-    await exec("git", ["init"], { cwd: tmp.path })
+    await exec("git", ["init", "--initial-branch=main"], { cwd: tmp.path })
     garden = await makeDummyGarden(tmp.path, { commandInfo: { name: "create project", args: {}, opts: {} } })
   })
 
@@ -39,10 +39,11 @@ describe("CreateProjectCommand", () => {
       log: garden.log,
       args: {},
       opts: withDefaultGlobalOpts({
-        dir: tmp.path,
-        interactive: false,
-        name: undefined,
-        filename: defaultProjectConfigFilename,
+        "dir": tmp.path,
+        "interactive": false,
+        "name": undefined,
+        "filename": defaultProjectConfigFilename,
+        "skip-comments": false,
       }),
     })
     const { name, configPath, ignoreFileCreated, ignoreFilePath } = result!
@@ -77,10 +78,11 @@ describe("CreateProjectCommand", () => {
       log: garden.log,
       args: {},
       opts: withDefaultGlobalOpts({
-        dir: tmp.path,
-        interactive: false,
-        name: undefined,
-        filename: defaultProjectConfigFilename,
+        "dir": tmp.path,
+        "interactive": false,
+        "name": undefined,
+        "filename": defaultProjectConfigFilename,
+        "skip-comments": false,
       }),
     })
     const { ignoreFileCreated, ignoreFilePath } = result!
@@ -101,10 +103,11 @@ describe("CreateProjectCommand", () => {
       log: garden.log,
       args: {},
       opts: withDefaultGlobalOpts({
-        dir: tmp.path,
-        interactive: false,
-        name: undefined,
-        filename: defaultProjectConfigFilename,
+        "dir": tmp.path,
+        "interactive": false,
+        "name": undefined,
+        "filename": defaultProjectConfigFilename,
+        "skip-comments": false,
       }),
     })
     const { ignoreFileCreated, ignoreFilePath } = result!
@@ -122,10 +125,11 @@ describe("CreateProjectCommand", () => {
       log: garden.log,
       args: {},
       opts: withDefaultGlobalOpts({
-        dir: tmp.path,
-        interactive: false,
-        name: "foo",
-        filename: defaultProjectConfigFilename,
+        "dir": tmp.path,
+        "interactive": false,
+        "name": "foo",
+        "filename": defaultProjectConfigFilename,
+        "skip-comments": false,
       }),
     })
     const { name, configPath } = result!
@@ -157,10 +161,11 @@ describe("CreateProjectCommand", () => {
       log: garden.log,
       args: {},
       opts: withDefaultGlobalOpts({
-        dir: tmp.path,
-        interactive: false,
-        name: undefined,
-        filename: "garden.yml",
+        "dir": tmp.path,
+        "interactive": false,
+        "name": undefined,
+        "filename": "garden.yml",
+        "skip-comments": false,
       }),
     })
     const { name, configPath } = result!
@@ -185,10 +190,11 @@ describe("CreateProjectCommand", () => {
       log: garden.log,
       args: {},
       opts: withDefaultGlobalOpts({
-        dir: tmp.path,
-        interactive: false,
-        name: undefined,
-        filename: "custom.garden.yml",
+        "dir": tmp.path,
+        "interactive": false,
+        "name": undefined,
+        "filename": "custom.garden.yml",
+        "skip-comments": false,
       }),
     })
     const { configPath } = result!
@@ -214,10 +220,11 @@ describe("CreateProjectCommand", () => {
           log: garden.log,
           args: {},
           opts: withDefaultGlobalOpts({
-            dir: tmp.path,
-            interactive: false,
-            name: undefined,
-            filename: defaultProjectConfigFilename,
+            "dir": tmp.path,
+            "interactive": false,
+            "name": undefined,
+            "filename": defaultProjectConfigFilename,
+            "skip-comments": false,
           }),
         }),
       (err) => expect(err.message).to.equal("A Garden project already exists in " + configPath)
@@ -236,9 +243,10 @@ describe("CreateProjectCommand", () => {
           args: {},
           opts: withDefaultGlobalOpts({
             dir,
-            interactive: false,
-            name: undefined,
-            filename: defaultProjectConfigFilename,
+            "interactive": false,
+            "name": undefined,
+            "filename": defaultProjectConfigFilename,
+            "skip-comments": false,
           }),
         }),
       (err) => expect(err.message).to.equal(`Path ${dir} does not exist`)

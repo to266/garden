@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -16,15 +16,42 @@ import { gardenAnnotationKey } from "../../util/string"
 import { hashManifest } from "./util"
 import { PluginToolSpec } from "../../types/plugin/tools"
 import { PluginContext } from "../../plugin-context"
+import { KubeApi } from "./api"
+import { pathExists } from "fs-extra"
+import { ConfigurationError } from "../../exceptions"
+
+// Corresponds to the default prune whitelist in `kubectl`.
+// See: https://github.com/kubernetes/kubectl/blob/master/pkg/cmd/apply/prune.go#L176-L192
+const versionedPruneKinds = [
+  { apiVersion: "v1", kind: "ConfigMap" },
+  { apiVersion: "v1", kind: "Endpoints" },
+  { apiVersion: "v1", kind: "Namespace" },
+  { apiVersion: "v1", kind: "PersistentVolumeClaim" },
+  { apiVersion: "v1", kind: "PersistentVolume" },
+  { apiVersion: "v1", kind: "Pod" },
+  { apiVersion: "v1", kind: "ReplicationController" },
+  { apiVersion: "v1", kind: "Secret" },
+  { apiVersion: "v1", kind: "Service" },
+  { apiVersion: "batch/v1", kind: "Job" },
+  { apiVersion: "batch/v1", kind: "CronJob" },
+  { apiVersion: "batch/v1beta1", kind: "CronJob" },
+  { apiVersion: "extensions/v1beta1", kind: "Ingress" },
+  { apiVersion: "networking.k8s.io/v1", kind: "Ingress" },
+  { apiVersion: "apps/v1", kind: "DaemonSet" },
+  { apiVersion: "apps/v1", kind: "Deployment" },
+  { apiVersion: "apps/v1", kind: "ReplicaSet" },
+  { apiVersion: "apps/v1", kind: "StatefulSet" },
+]
 
 export interface ApplyParams {
   log: LogEntry
   ctx: PluginContext
+  api: KubeApi
   provider: KubernetesProvider
   manifests: KubernetesResource[]
   namespace?: string
   dryRun?: boolean
-  pruneSelector?: string
+  pruneLabels?: { [label: string]: string }
   validate?: boolean
 }
 
@@ -33,11 +60,12 @@ export const KUBECTL_DEFAULT_TIMEOUT = 300
 export async function apply({
   log,
   ctx,
+  api,
   provider,
   manifests,
   dryRun = false,
   namespace,
-  pruneSelector,
+  pruneLabels,
   validate = true,
 }: ApplyParams) {
   // Hash the raw input and add as an annotation on each manifest (this is helpful beyond kubectl's own annotation,
@@ -53,15 +81,49 @@ export async function apply({
     manifest.metadata.annotations[gardenAnnotationKey("manifest-hash")] = await hashManifest(manifest)
   }
 
+  // The `--prune` option for `kubectl apply` currently isn't backwards-compatible, so here, we essentially
+  // reimplement the pruning logic. This enables us to prune resources in a way that works for newer and older
+  // versions of Kubernetes, while still being able to use an up-to-date version of `kubectl`.
+  //
+  // This really should be fixed in `kubectl` proper. In fact, simply including resource mappings for older/beta API
+  // versions and adding the appropriate error handling for missing API/resource versions to the pruning logic would
+  // be enough to make `kubectl apply --prune` backwards-compatible.
+  let resourcesToPrune: KubernetesResource[] = []
+  if (namespace && pruneLabels) {
+    // Fetch all deployed resources in the namesapce matching `pruneLabels` (for all resource kinds represented in
+    // `versionedPruneKinds` - see its definition above).
+    const resourcesForLabels = await api.listResourcesForKinds({
+      log,
+      namespace,
+      versionedKinds: versionedPruneKinds,
+      labelSelector: pruneLabels,
+    })
+
+    // We only prune resources that were created/updated via `kubectl apply (this is how `kubectl apply --prune` works)
+    // and that don't match any of the applied manifests by kind and name.
+    resourcesToPrune = resourcesForLabels
+      .filter((r) => r.metadata.annotations?.["kubectl.kubernetes.io/last-applied-configuration"])
+      .filter((r) => !manifests.find((m) => m.kind === r.kind && m.metadata.name === r.metadata.name))
+  }
+
   const input = Buffer.from(encodeYamlMulti(manifests))
 
   let args = ["apply"]
   dryRun && args.push("--dry-run")
-  pruneSelector && args.push("--prune", "--selector", pruneSelector)
   args.push("--output=json", "-f", "-")
   !validate && args.push("--validate=false")
 
   const result = await kubectl(ctx, provider).stdout({ log, namespace, args, input })
+
+  if (namespace && resourcesToPrune.length > 0) {
+    await deleteResources({
+      log,
+      ctx,
+      provider,
+      namespace,
+      resources: resourcesToPrune,
+    })
+  }
 
   try {
     return JSON.parse(result)
@@ -142,6 +204,22 @@ class Kubectl extends PluginTool {
     super(spec)
   }
 
+  async getPath(log: LogEntry) {
+    const override = this.provider.config.kubectlPath
+
+    if (override) {
+      const exists = await pathExists(override)
+
+      if (!exists) {
+        throw new ConfigurationError(`Could not find configured kubectlPath: ${override}`, { kubectlPath: override })
+      }
+
+      return override
+    }
+
+    return super.getPath(log)
+  }
+
   async stdout(params: KubectlParams) {
     return super.stdout(params)
   }
@@ -219,20 +297,26 @@ export const kubectlSpec: PluginToolSpec = {
     {
       platform: "darwin",
       architecture: "amd64",
-      url: "https://storage.googleapis.com/kubernetes-release/release/v1.20.2/bin/darwin/amd64/kubectl",
-      sha256: "c4b120ab1284222afbc15f28e4e7d8dfcfc3ad2435bd17e5bfec62e17036623c",
+      url: "https://storage.googleapis.com/kubernetes-release/release/v1.23.3/bin/darwin/amd64/kubectl",
+      sha256: "ecc91cd2f92184630912f9dcd8c47443b50ebfa4b1da431fb28fa7b462dd70ab",
+    },
+    {
+      platform: "darwin",
+      architecture: "arm64",
+      url: "https://storage.googleapis.com/kubernetes-release/release/v1.23.3/bin/darwin/arm64/kubectl",
+      sha256: "e43303daa6e99de6e182f0c3b3113e45ea0015bc84abd2485f0dde5770163f63",
     },
     {
       platform: "linux",
       architecture: "amd64",
-      url: "https://storage.googleapis.com/kubernetes-release/release/v1.20.2/bin/linux/amd64/kubectl",
-      sha256: "2583b1c9fbfc5443a722fb04cf0cc83df18e45880a2cf1f6b52d9f595c5beb88",
+      url: "https://storage.googleapis.com/kubernetes-release/release/v1.23.3/bin/linux/amd64/kubectl",
+      sha256: "d7da739e4977657a3b3c84962df49493e36b09cc66381a5e36029206dd1e01d0",
     },
     {
       platform: "windows",
       architecture: "amd64",
-      url: "https://storage.googleapis.com/kubernetes-release/release/v1.20.2/bin/windows/amd64/kubectl.exe",
-      sha256: "d8731ac97166c506441e5d2f69e31d57356983ae15602ba12cc16981862bfdef",
+      url: "https://storage.googleapis.com/kubernetes-release/release/v1.23.3/bin/windows/amd64/kubectl.exe",
+      sha256: "5cd17bfb33c73f1c9ae757e97bf12e686ff3a7707faed6fdc7de2c538429debd",
     },
   ],
 }

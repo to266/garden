@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -13,15 +13,14 @@ import { CommandError, InternalError, ParameterError } from "../exceptions"
 import { BasicTerminalWriter } from "./writers/basic-terminal-writer"
 import { FancyTerminalWriter } from "./writers/fancy-terminal-writer"
 import { JsonTerminalWriter } from "./writers/json-terminal-writer"
-import { FullscreenTerminalWriter } from "./writers/fullscreen-terminal-writer"
 import { EventBus } from "../events"
-import { formatLogEntryForEventStream } from "../enterprise/buffered-event-stream"
+import { formatLogEntryForEventStream } from "../cloud/buffered-event-stream"
 import { gardenEnv } from "../constants"
 import { getEnumKeys } from "../util/util"
 import { range } from "lodash"
 
-export type LoggerType = "quiet" | "basic" | "fancy" | "fullscreen" | "json"
-export const LOGGER_TYPES = new Set<LoggerType>(["quiet", "basic", "fancy", "fullscreen", "json"])
+export type LoggerType = "quiet" | "basic" | "fancy" | "json"
+export const LOGGER_TYPES = new Set<LoggerType>(["quiet", "basic", "fancy", "json"])
 
 export enum LogLevel {
   error = 0,
@@ -72,8 +71,6 @@ export function getWriterInstance(loggerType: LoggerType, level: LogLevel) {
       return new BasicTerminalWriter(level)
     case "fancy":
       return new FancyTerminalWriter(level)
-    case "fullscreen":
-      return new FullscreenTerminalWriter(level)
     case "json":
       return new JsonTerminalWriter(level)
     case "quiet":
@@ -90,6 +87,7 @@ export interface LoggerConfigBase {
 
 export interface LoggerConfig extends LoggerConfigBase {
   type: LoggerType
+  storeEntries: boolean
 }
 
 export interface LoggerConstructor extends LoggerConfigBase {
@@ -189,11 +187,8 @@ export class Logger implements LogNode {
     }
 
     const writer = getWriterInstance(config.type, config.level)
-    // This should probably be a property on the writer itself but feels like an unncessary
-    // indirection for now.
-    const storeEntries = writer instanceof FancyTerminalWriter || config.storeEntries || false
 
-    instance = new Logger({ ...config, storeEntries, writers: writer ? [writer] : [] })
+    instance = new Logger({ ...config, storeEntries: config.storeEntries, writers: writer ? [writer] : [] })
 
     if (gardenEnv.GARDEN_LOG_LEVEL) {
       instance.debug(`Setting log level to ${gardenEnv.GARDEN_LOG_LEVEL} (from GARDEN_LOG_LEVEL)`)
@@ -310,6 +305,15 @@ export class Logger implements LogNode {
 
   cleanup(): void {
     this.writers.forEach((writer) => writer.cleanup())
+  }
+}
+
+/**
+ * Dummy Logger instance, just swallows log entries and prints nothing.
+ */
+export class VoidLogger extends Logger {
+  constructor() {
+    super({ writers: [], level: LogLevel.error, storeEntries: false })
   }
 }
 

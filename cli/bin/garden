@@ -1,42 +1,41 @@
 #!/usr/bin/env node
 
-const cluster = require("cluster")
+if (process.env.GARDEN_ENABLE_PROFILING === "1" || process.env.GARDEN_ENABLE_PROFILING === "true") {
+  // Patch require to profile module loading
+  const Mod = require("module")
+  const { performance } = require("perf_hooks")
+  const { basename } = require("path")
+  const { getDefaultProfiler } = require("@garden-io/core/build/src/util/profiling")
 
-// Wrapping and forking, to catch OOM errors and print helpful message
-// See https://medium.com/@evgeni.leonti/detect-heap-overflow-on-node-js-javascript-heap-out-of-memory-41cb649c6b33
-if (cluster.isMaster) {
-  cluster.fork()
-  cluster.on("exit", (_, workerExitCode) => {
-    process.exit(workerExitCode)
-  })
-} else {
-  const v8 = require("v8")
-  require("source-map-support").install()
+  const req = Mod.prototype.require
+  const profiler = getDefaultProfiler()
+  const prefix = "require:"
 
-  const cli = require("../build/src/cli")
-  const chalk = require("chalk")
+  Mod.prototype.require = function () {
+    const start = performance.now()
 
-  // Worker process
-  const totalHeapSizeThreshold = (v8.getHeapStatistics().heap_size_limit * 85) / 100
+    // tslint:disable-next-line: no-invalid-this
+    const mod = req.apply(this, arguments)
+    profiler.log("require", start) // Aggregate of all requires
 
-  let detectHeapOverflow = () => {
-    let stats = v8.getHeapStatistics()
+    let moduleName = arguments[0]
 
-    if (stats.total_heap_size > totalHeapSizeThreshold) {
-      // tslint:disable-next-line: no-console
-      console.error(
-        chalk.red.bold(`
-Process memory threshold reached. This most likely means there are too many files in the project, and that you need to exclude large dependency directories. Please see https://docs.garden.io/using-garden/configuration-overview#including-excluding-files-and-directories for information on how to do that.
-
-If this keeps occurring after configuring exclusions, please file an issue at https://github.com/garden-io/garden/issues.
-        `)
-      )
-
-      process.exit(137)
+    if (moduleName.startsWith("/")) {
+      // Absolute path
+      const split = moduleName.split("/")
+      profiler.log(prefix + split[split.length - 1], start)
+    } else {
+      profiler.log(prefix + moduleName, start)
+      // tslint:disable-next-line: no-invalid-this
+      profiler.log(prefix + basename(this.filename) + ":" + moduleName, start)
     }
-  }
-  setInterval(detectHeapOverflow, 1000)
 
-  // tslint:disable-next-line: no-floating-promises
-  cli.runCli()
+    return mod
+  }
 }
+
+require("source-map-support").install()
+const cli = require("../build/src/cli")
+
+// tslint:disable-next-line: no-floating-promises
+cli.runCli()

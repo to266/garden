@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -19,7 +19,6 @@ import {
   TimeoutError,
   RuntimeError,
   ConfigurationError,
-  ParameterError,
   OutOfMemoryError,
 } from "../../exceptions"
 import { KubernetesProvider } from "./config"
@@ -33,14 +32,16 @@ import { ContainerEnvVars, ContainerResourcesSpec, ContainerVolumeSpec } from ".
 import { prepareEnvVars, makePodName } from "./util"
 import { deline, randomString } from "../../util/string"
 import { ArtifactSpec } from "../../config/validation"
-import { prepareImagePullSecrets } from "./secrets"
+import { prepareSecrets } from "./secrets"
 import { configureVolumes } from "./container/deployment"
-import { PluginContext } from "../../plugin-context"
+import { PluginContext, PluginEventBroker } from "../../plugin-context"
 import { waitForResources, ResourceStatus } from "./status/status"
 import { RuntimeContext } from "../../runtime-context"
-import { getResourceRequirements } from "./container/util"
+import { getResourceRequirements, getSecurityContext } from "./container/util"
 import { KUBECTL_DEFAULT_TIMEOUT } from "./kubectl"
 import { copy } from "fs-extra"
+import { K8sLogFollower, PodLogEntryConverter, PodLogEntryConverterParams } from "./logs"
+import { Stream } from "ts-stream"
 
 // Default timeout for individual run/exec operations
 const defaultTimeout = 600
@@ -91,7 +92,16 @@ export const runPodSpecIncludeFields: (keyof V1PodSpec)[] = [
   "volumes",
 ]
 
-export const runContainerExcludeFields: (keyof V1Container)[] = ["readinessProbe", "livenessProbe"]
+export interface RunLogEntry {
+  timestamp?: Date
+  msg: string
+}
+
+export const makeRunLogEntry: PodLogEntryConverter<RunLogEntry> = ({ timestamp, msg }: PodLogEntryConverterParams) => {
+  return { timestamp, msg }
+}
+
+export const runContainerExcludeFields: (keyof V1Container)[] = ["readinessProbe", "livenessProbe", "startupProbe"]
 
 export async function runAndCopy({
   ctx,
@@ -114,6 +124,9 @@ export async function runAndCopy({
   namespace,
   version,
   volumes,
+  privileged,
+  addCapabilities,
+  dropCapabilities,
 }: RunModuleParams<GardenModule> & {
   image: string
   container?: V1Container
@@ -127,6 +140,9 @@ export async function runAndCopy({
   namespace: string
   version: string
   volumes?: ContainerVolumeSpec[]
+  privileged?: boolean
+  addCapabilities?: string[]
+  dropCapabilities?: string[]
 }): Promise<RunResult> {
   const provider = <KubernetesProvider>ctx.provider
   const api = await KubeApi.factory(log, ctx, provider)
@@ -159,18 +175,14 @@ export async function runAndCopy({
     container,
     namespace,
     volumes,
+    privileged,
+    addCapabilities,
+    dropCapabilities,
   })
 
   if (!podName) {
     podName = makePodName("run", module.name)
   }
-
-  const outputStream = new PassThrough()
-
-  outputStream.on("error", () => {})
-  outputStream.on("data", (data: Buffer) => {
-    ctx.events.emit("log", { timestamp: new Date().getTime(), data })
-  })
 
   const runParams = {
     ctx,
@@ -187,11 +199,16 @@ export async function runAndCopy({
     podName,
     namespace,
     version,
-    stdout: outputStream,
-    stderr: outputStream,
   }
 
   if (getArtifacts) {
+    const outputStream = new PassThrough()
+
+    outputStream.on("error", () => {})
+    outputStream.on("data", (data: Buffer) => {
+      ctx.events.emit("log", { timestamp: new Date().getTime(), data })
+    })
+
     return runWithArtifacts({
       ...runParams,
       mainContainerName,
@@ -199,6 +216,8 @@ export async function runAndCopy({
       artifactsPath: artifactsPath!,
       description,
       errorMetadata,
+      stdout: outputStream,
+      stderr: outputStream,
     })
   } else {
     return runWithoutArtifacts(runParams)
@@ -225,6 +244,9 @@ export async function prepareRunPodSpec({
   container,
   namespace,
   volumes,
+  privileged,
+  addCapabilities,
+  dropCapabilities,
 }: {
   podSpec?: V1PodSpec
   getArtifacts: boolean
@@ -244,6 +266,9 @@ export async function prepareRunPodSpec({
   container?: V1Container
   namespace: string
   volumes?: ContainerVolumeSpec[]
+  privileged?: boolean
+  addCapabilities?: string[]
+  dropCapabilities?: string[]
 }): Promise<V1PodSpec> {
   // Prepare environment variables
   envVars = { ...runtimeContext.envVars, ...envVars }
@@ -254,11 +279,13 @@ export async function prepareRunPodSpec({
   ])
 
   const resourceRequirements = resources ? { resources: getResourceRequirements(resources) } : {}
+  const securityContext = getSecurityContext(privileged, addCapabilities, dropCapabilities)
 
   const containers: V1Container[] = [
     {
       ...omit(container || {}, runContainerExcludeFields),
       ...resourceRequirements,
+      ...(securityContext ? { securityContext } : {}),
       // We always override the following attributes
       name: mainContainerName,
       image,
@@ -268,7 +295,8 @@ export async function prepareRunPodSpec({
     },
   ]
 
-  const imagePullSecrets = await prepareImagePullSecrets({ api, provider, namespace, log })
+  const imagePullSecrets = await prepareSecrets({ api, namespace, secrets: provider.config.imagePullSecrets, log })
+  await prepareSecrets({ api, namespace, secrets: provider.config.copySecrets, log })
 
   const preparedPodSpec = {
     ...pick(podSpec || {}, runPodSpecIncludeFields),
@@ -319,8 +347,6 @@ async function runWithoutArtifacts({
   timeout,
   podSpec,
   podName,
-  stdout,
-  stderr,
   namespace,
   interactive,
   version,
@@ -329,8 +355,6 @@ async function runWithoutArtifacts({
   provider: KubernetesProvider
   podSpec: V1PodSpec
   podName: string
-  stdout: Writable
-  stderr: Writable
   namespace: string
   version: string
 }): Promise<RunResult> {
@@ -359,10 +383,9 @@ async function runWithoutArtifacts({
     const res = await runner.runAndWait({
       log,
       remove: true,
+      events: ctx.events,
       timeoutSec: timeout || defaultTimeout,
       tty: !!interactive,
-      stdout,
-      stderr,
     })
     result = {
       ...res,
@@ -534,10 +557,20 @@ async function runWithArtifacts({
     const cmd = [...command!, ...(args || [])].map((s) => JSON.stringify(s))
 
     try {
+      // See https://stackoverflow.com/a/20564208
+      const commandScript = `
+exec 1<&-
+exec 2<&-
+exec 1<>/tmp/output
+exec 2>&1
+
+${cmd.join(" ")}
+`
+
       const res = await runner.exec({
         // Pipe the output from the command to the /tmp/output pipe, including stderr. Some shell voodoo happening
         // here, but this was the only working approach I could find after a lot of trial and error.
-        command: ["sh", "-c", `exec >/tmp/output; ${cmd.join(" ")}`],
+        command: ["sh", "-c", commandScript],
         containerName: mainContainerName,
         log,
         stdout,
@@ -703,11 +736,9 @@ type ExecParams = StartParams & {
 }
 
 type RunParams = StartParams & {
-  stdout?: Writable
-  stderr?: Writable
-  stdin?: Readable
   remove: boolean
   tty: boolean
+  events: PluginEventBroker
 }
 
 class PodRunnerError extends GardenBaseError {
@@ -757,30 +788,13 @@ export class PodRunner extends PodRunnerParams {
    * If tty=true, we attach to the process stdio during execution.
    */
   async runAndWait(params: RunParams): Promise<RunAndWaitResult> {
-    const { log, remove, timeoutSec, tty } = params
-    let { stdout, stderr, stdin } = params
+    const { log, remove, timeoutSec, tty, events } = params
     const { namespace, podName } = this
 
     const startedAt = new Date()
     let success = true
-    let attached = false
     let mainContainerLogs = ""
     const mainContainerName = this.getMainContainerName()
-
-    if (tty) {
-      if (stdout) {
-        stdout.pipe(process.stdout)
-      } else {
-        stdout = process.stdout
-      }
-      if (stderr) {
-        stderr.pipe(process.stderr)
-      } else {
-        stderr = process.stderr
-      }
-
-      stdin = process.stdin
-    }
 
     const getDebugLogs = async () => {
       try {
@@ -790,6 +804,28 @@ export class PodRunner extends PodRunnerParams {
       }
     }
 
+    const stream = new Stream<RunLogEntry>()
+    void stream.forEach((entry) => {
+      const { msg, timestamp } = entry
+      events.emit("log", { timestamp, data: Buffer.from(msg) })
+      if (tty) {
+        process.stdout.write(`${entry.msg}\n`)
+      }
+    })
+    const logsFollower = new K8sLogFollower({
+      defaultNamespace: this.namespace,
+      retryIntervalMs: 10,
+      stream,
+      log,
+      entryConverter: makeRunLogEntry,
+      resources: [this.pod],
+      k8sApi: this.api,
+    })
+    const limitBytes = 1000 * 1024 // 1MB
+    logsFollower.followLogs({ limitBytes }).catch((_err) => {
+      // Errors in `followLogs` are logged there, so all we need to do here is to ensure that the follower is closed.
+      logsFollower.close()
+    })
     try {
       await this.createPod({ log, tty })
 
@@ -843,33 +879,6 @@ export class PodRunner extends PodRunnerParams {
           break
         }
 
-        if (!attached && (tty || stdout || stderr)) {
-          // Try to attach to Pod to stream logs
-          try {
-            /**
-             * TODO: We miss out on any pod log lines that get written before we manage to attach to the pod. Thi
-             *  means that we can't guarantee that we'll pipe logs from the first 1-2 seconds (more, if several retries
-             * of this `while`-loop are needed) of the runner pod's execution to the `stdout`/`stderr` streams
-             * provided to this method.
-             *
-             * If this becomes a problem, we may need to come up with a different approach to ensure we stream those
-             * first few log lines.
-             */
-            await this.api.attachToPod({
-              namespace,
-              podName,
-              containerName: mainContainerName,
-              stdout,
-              stderr,
-              stdin,
-              tty,
-            })
-            attached = true
-          } catch (err) {
-            // Ignore errors when attaching, we'll just keep trying
-          }
-        }
-
         const elapsed = (new Date().getTime() - startedAt.getTime()) / 1000
 
         if (timeoutSec && elapsed > timeoutSec) {
@@ -886,6 +895,7 @@ export class PodRunner extends PodRunnerParams {
       // Retrieve logs after run
       mainContainerLogs = await this.getMainContainerLogs()
     } finally {
+      logsFollower.close()
       if (remove) {
         await this.stop()
       }
@@ -924,12 +934,17 @@ export class PodRunner extends PodRunnerParams {
     let { stdout, stderr, stdin } = params
 
     if (tty) {
-      if (stdout || stderr || stdin) {
-        throw new ParameterError(`Cannot set both tty and stdout/stderr/stdin streams`, { params })
+      if (stdout) {
+        stdout.pipe(process.stdout)
+      } else {
+        stdout = process.stdout
+      }
+      if (stderr) {
+        stderr.pipe(process.stderr)
+      } else {
+        stderr = process.stderr
       }
 
-      stdout = process.stdout
-      stderr = process.stderr
       stdin = process.stdin
     }
 

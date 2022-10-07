@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,20 +7,19 @@
  */
 
 import { shutdown } from "@garden-io/core/build/src/util/util"
-import { gardenEnv } from "@garden-io/core/build/src/constants"
-import { getDefaultProfiler } from "@garden-io/core/build/src/util/profiling"
-import { GardenProcess } from "@garden-io/core/build/src/db/entities/garden-process"
-import { ensureConnected } from "@garden-io/core/build/src/db/connection"
 import { GardenCli, RunOutput } from "@garden-io/core/build/src/cli/cli"
-import { GardenPluginCallback } from "@garden-io/core/build/src/types/plugin/plugin"
+import { GardenPluginReference } from "@garden-io/core/build/src/types/plugin/plugin"
 
 // These plugins are always registered
-export const getBundledPlugins = (): GardenPluginCallback[] =>
-  [
-    require("@garden-io/garden-conftest"),
-    require("@garden-io/garden-conftest-container"),
-    require("@garden-io/garden-conftest-kubernetes"),
-  ].map((m) => () => m.gardenPlugin())
+export const getBundledPlugins = (): GardenPluginReference[] => [
+  { name: "conftest", callback: () => require("@garden-io/garden-conftest").gardenPlugin() },
+  { name: "conftest-container", callback: () => require("@garden-io/garden-conftest-container").gardenPlugin() },
+  { name: "conftest-kubernetes", callback: () => require("@garden-io/garden-conftest-kubernetes").gardenPlugin() },
+  { name: "jib", callback: () => require("@garden-io/garden-jib").gardenPlugin() },
+  { name: "maven-container", callback: () => require("@garden-io/garden-maven-container").gardenPlugin() },
+  { name: "terraform", callback: () => require("@garden-io/garden-terraform").gardenPlugin() },
+  { name: "pulumi", callback: () => require("@garden-io/garden-pulumi").gardenPlugin() },
+]
 
 export async function runCli({
   args,
@@ -34,28 +33,19 @@ export async function runCli({
     args = process.argv.slice(2)
   }
 
-  await ensureConnected()
-  const processRecord = await GardenProcess.register(args)
-
   try {
     if (!cli) {
       cli = new GardenCli({ plugins: getBundledPlugins() })
     }
     // Note: We slice off the binary/script name from argv.
-    result = await cli.run({ args, exitOnError, processRecord })
+    result = await cli.run({ args, exitOnError })
     code = result.code
   } catch (err) {
     // tslint:disable-next-line: no-console
     console.log(err.message)
     code = 1
   } finally {
-    await processRecord.remove()
-
-    if (gardenEnv.GARDEN_ENABLE_PROFILING) {
-      // tslint:disable-next-line: no-console
-      console.log(getDefaultProfiler().report())
-    }
-
+    await cli?.processRecord?.remove()
     await shutdown(code)
   }
 

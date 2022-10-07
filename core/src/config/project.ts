@@ -1,44 +1,43 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import dotenv = require("dotenv")
 import { apply, merge } from "json-merge-patch"
-import { deline, dedent } from "../util/string"
+import { dedent, deline } from "../util/string"
 import {
+  apiVersionSchema,
+  DeepPrimitiveMap,
+  includeGuideLink,
+  joi,
   joiArray,
   joiIdentifier,
-  joiVariables,
-  Primitive,
-  joiRepositoryUrl,
-  joiUserIdentifier,
-  joi,
-  includeGuideLink,
   joiPrimitive,
-  DeepPrimitiveMap,
-  joiVariablesDescription,
-  apiVersionSchema,
+  joiRepositoryUrl,
   joiSparseArray,
+  joiUserIdentifier,
+  joiVariables,
+  joiVariablesDescription,
+  Primitive,
+  PrimitiveMap,
 } from "./common"
 import { validateWithPath } from "./validation"
 import { resolveTemplateStrings } from "../template-string/template-string"
-import { ProjectConfigContext, EnvironmentConfigContext } from "./template-contexts/project"
+import { EnvironmentConfigContext, ProjectConfigContext } from "./template-contexts/project"
 import { findByName, getNames } from "../util/util"
 import { ConfigurationError, ParameterError, ValidationError } from "../exceptions"
-import { PrimitiveMap } from "./common"
-import { cloneDeep, omit, isPlainObject } from "lodash"
-import { providerConfigBaseSchema, GenericProviderConfig } from "./provider"
+import { cloneDeep, omit } from "lodash"
+import { GenericProviderConfig, providerConfigBaseSchema } from "./provider"
 import { DOCS_BASE_URL } from "../constants"
 import { defaultDotIgnoreFiles } from "../util/fs"
-import { pathExists, readFile } from "fs-extra"
-import { resolve, basename, relative } from "path"
-import chalk = require("chalk")
-import { safeLoad } from "js-yaml"
 import { CommandInfo } from "../plugin-context"
+import { VcsInfo } from "../vcs/vcs"
+import { profileAsync } from "../util/profiling"
+import { loadVarfile } from "./base"
+import chalk = require("chalk")
 
 export const defaultVarfilePath = "garden.env"
 export const defaultEnvVarfilePath = (environmentName: string) => `garden.${environmentName}.env`
@@ -63,7 +62,7 @@ export interface EnvironmentConfig {
   production?: boolean
 }
 
-const varfileDescription = `
+export const varfileDescription = `
 The format of the files is determined by the configured file's extension:
 
 * \`.env\` - Standard "dotenv" format, as defined by [dotenv](https://github.com/motdotla/dotenv#rules).
@@ -97,8 +96,8 @@ export const environmentSchema = () =>
         dedent`
       Flag the environment as a production environment.
 
-      Setting this flag to \`true\` will activate the protection on the \`deploy\`, \`test\`, \`task\`, \`build\`,
-      and \`dev\` commands. A protected command will ask for a user confirmation every time is run against
+      Setting this flag to \`true\` will activate the protection on the \`build\`, \`delete\`, \`deploy\`, \`dev\`, and
+      \`test\` commands. A protected command will ask for a user confirmation every time is run against
       an environment marked as production.
       Run the command with the "--yes" flag to skip the check (e.g. when running Garden in CI).
 
@@ -133,13 +132,7 @@ export const environmentSchema = () =>
   })
 
 export const environmentsSchema = () =>
-  joi
-    .alternatives(
-      joiSparseArray(environmentSchema()).unique("name"),
-      // Allow a string as a shorthand for { name: foo }
-      joiSparseArray(joiUserIdentifier())
-    )
-    .description("A list of environments to configure for the project.")
+  joiSparseArray(environmentSchema()).unique("name").description("A list of environments to configure for the project.")
 
 export interface SourceConfig {
   name: string
@@ -284,7 +277,7 @@ export const projectDocsSchema = () =>
       configPath: joi.string().meta({ internal: true }).description("The path to the project config file."),
       name: projectNameSchema(),
       // TODO: Refer to enterprise documentation for more details.
-      id: joi.string().meta({ internal: true }).description("The project's ID in Garden Enterprise."),
+      id: joi.string().meta({ internal: true }).description("The project's ID in Garden Cloud."),
       // TODO: Refer to enterprise documentation for more details.
       domain: joi
         .string()
@@ -334,7 +327,7 @@ export const projectDocsSchema = () =>
         A list of output values that the project should export. These are exported by the \`garden get outputs\` command, as well as when referencing a project as a sub-project within another project.
 
         You may use any template strings to specify the values, including references to provider outputs, module
-        outputs and runtime outputs. For a full reference, see the [Output configuration context](${DOCS_BASE_URL}/reference/template-strings#output-configuration-context) section in the Template String Reference.
+        outputs and runtime outputs. For a full reference, see the [Output configuration context](./template-strings/project-outputs.md) section in the Template String Reference.
 
         Note that if any runtime outputs are referenced, the referenced services and tasks will be deployed and run if necessary when resolving the outputs.
         `
@@ -401,7 +394,7 @@ export function resolveProjectConfig({
   defaultEnvironment,
   config,
   artifactsPath,
-  branch,
+  vcsInfo,
   username,
   loggedIn,
   enterpriseDomain,
@@ -411,7 +404,7 @@ export function resolveProjectConfig({
   defaultEnvironment: string
   config: ProjectConfig
   artifactsPath: string
-  branch: string
+  vcsInfo: VcsInfo
   username: string
   loggedIn: boolean
   enterpriseDomain: string | undefined
@@ -433,7 +426,7 @@ export function resolveProjectConfig({
       projectName: name,
       projectRoot: config.path,
       artifactsPath,
-      branch,
+      vcsInfo,
       username,
       loggedIn,
       enterpriseDomain,
@@ -498,7 +491,11 @@ export function resolveProjectConfig({
  * For project variables, we apply the variables specified to the selected environment on the global variables
  * specified on the top-level `variables` key using a JSON Merge Patch (https://tools.ietf.org/html/rfc7396).
  * We also attempt to load the configured varfiles, and include those in the merge. The precedence order is as follows:
+ *
  *   environment.varfile > environment.variables > project.varfile > project.variables
+ *
+ * Variables passed through the `--var` CLI option have the highest precedence, and are merged in later in the flow
+ * (see `resolveGardenParams`).
  *
  * For provider configuration, we filter down to the providers that are enabled for all environments (no `environments`
  * key specified) and those that explicitly list the specified environments. Then we merge any provider configs with
@@ -513,11 +510,11 @@ export function resolveProjectConfig({
  * @param config a resolved project config (as returned by `resolveProjectConfig()`)
  * @param envString the name of the environment to use
  */
-export async function pickEnvironment({
+export const pickEnvironment = profileAsync(async function _pickEnvironment({
   projectConfig,
   envString,
   artifactsPath,
-  branch,
+  vcsInfo,
   username,
   loggedIn,
   enterpriseDomain,
@@ -527,7 +524,7 @@ export async function pickEnvironment({
   projectConfig: ProjectConfig
   envString: string
   artifactsPath: string
-  branch: string
+  vcsInfo: VcsInfo
   username: string
   loggedIn: boolean
   enterpriseDomain: string | undefined
@@ -549,7 +546,11 @@ export async function pickEnvironment({
     })
   }
 
-  const projectVarfileVars = await loadVarfile(projectConfig.path, projectConfig.varfile, defaultVarfilePath)
+  const projectVarfileVars = await loadVarfile({
+    configRoot: projectConfig.path,
+    path: projectConfig.varfile,
+    defaultPath: defaultVarfilePath,
+  })
   const projectVariables: DeepPrimitiveMap = <any>merge(projectConfig.variables, projectVarfileVars)
 
   const envProviders = environmentConfig.providers || []
@@ -561,7 +562,7 @@ export async function pickEnvironment({
       projectName,
       projectRoot,
       artifactsPath,
-      branch,
+      vcsInfo,
       username,
       variables: projectVariables,
       loggedIn,
@@ -599,11 +600,11 @@ export async function pickEnvironment({
     }
   }
 
-  const envVarfileVars = await loadVarfile(
-    projectConfig.path,
-    environmentConfig.varfile,
-    defaultEnvVarfilePath(environment)
-  )
+  const envVarfileVars = await loadVarfile({
+    configRoot: projectConfig.path,
+    path: environmentConfig.varfile,
+    defaultPath: defaultEnvVarfilePath(environment),
+  })
 
   const variables: DeepPrimitiveMap = <any>merge(projectVariables, merge(environmentConfig.variables, envVarfileVars))
 
@@ -614,7 +615,7 @@ export async function pickEnvironment({
     providers: Object.values(mergedProviders),
     variables,
   }
-}
+})
 
 /**
  * Validates that the value passed for `namespace` conforms with the namespacing setting in `environmentConfig`,
@@ -656,54 +657,5 @@ export function parseEnvironment(env: string): ParsedEnvironment {
     return { environment: env }
   } else {
     return { environment: split[1], namespace: split[0] }
-  }
-}
-
-async function loadVarfile(projectRoot: string, path: string | undefined, defaultPath: string): Promise<PrimitiveMap> {
-  const resolvedPath = resolve(projectRoot, path || defaultPath)
-  const exists = await pathExists(resolvedPath)
-
-  if (!exists && path && path !== defaultPath) {
-    throw new ConfigurationError(`Could not find varfile at path '${path}'`, {
-      path,
-      resolvedPath,
-    })
-  }
-
-  if (!exists) {
-    return {}
-  }
-
-  try {
-    const data = await readFile(resolvedPath)
-    const relPath = relative(projectRoot, resolvedPath)
-    const filename = basename(resolvedPath.toLowerCase())
-
-    if (filename.endsWith(".json")) {
-      const parsed = JSON.parse(data.toString())
-      if (!isPlainObject(parsed)) {
-        throw new ConfigurationError(`Configured variable file ${relPath} must be a valid plain JSON object`, {
-          parsed,
-        })
-      }
-      return parsed
-    } else if (filename.endsWith(".yml") || filename.endsWith(".yaml")) {
-      const parsed = safeLoad(data.toString())
-      if (!isPlainObject(parsed)) {
-        throw new ConfigurationError(`Configured variable file ${relPath} must be a single plain YAML mapping`, {
-          parsed,
-        })
-      }
-      return parsed as PrimitiveMap
-    } else {
-      // Note: For backwards-compatibility we fall back on using .env as a default format, and don't specifically
-      // validate the extension for that.
-      return dotenv.parse(await readFile(resolvedPath))
-    }
-  } catch (error) {
-    throw new ConfigurationError(`Unable to load varfile at '${path}': ${error}`, {
-      error,
-      path,
-    })
   }
 }

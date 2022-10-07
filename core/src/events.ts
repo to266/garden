@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,14 +9,15 @@
 import { omit } from "lodash"
 import { EventEmitter2 } from "eventemitter2"
 import { GraphResult } from "./task-graph"
-import { LogEntryEventPayload } from "./enterprise/buffered-event-stream"
+import { LogEntryEventPayload } from "./cloud/buffered-event-stream"
 import { ServiceStatus } from "./types/service"
 import { NamespaceStatus, RunStatus } from "./types/plugin/base"
 import { Omit } from "./util/util"
-import { AuthTokenResponse } from "./enterprise/api"
+import { AuthTokenResponse } from "./cloud/api"
 import { RenderedActionGraph } from "./config-graph"
 import { BuildState } from "./types/plugin/module/build"
 import { CommandInfo } from "./plugin-context"
+import { sanitizeObject } from "./logger/util"
 
 export type GardenEventListener<T extends EventName> = (payload: Events[T]) => void
 
@@ -71,10 +72,25 @@ export interface ServiceStatusPayload extends Omit<ServiceStatus, "detail"> {
   deployCompletedAt?: Date
 }
 
+export interface CommandInfoPayload extends CommandInfo {
+  // Contains additional context for the command info available during init
+  environmentName: string
+  environmentId: number | undefined
+  projectName: string
+  projectId: string
+  namespaceName: string
+  namespaceId: number | undefined
+  coreVersion: string
+  vcsBranch: string
+  vcsCommitHash: string
+  vcsOriginUrl: string
+}
+
 export function toGraphResultEventPayload(result: GraphResult): GraphResultEventPayload {
-  const payload = omit(result, "dependencyResults")
+  const payload = sanitizeObject(omit(result, "dependencyResults"))
   if (result.output) {
-    payload.output = omit(result.output, "dependencyResults", "log", "buildLog")
+    // TODO: Use a combined blacklist of fields from all task types instead of hardcoding here.
+    payload.output = omit(result.output, "dependencyResults", "log", "buildLog", "detail")
     if (result.output.version) {
       payload.output.version = result.output.version.versionString || null
     }
@@ -96,9 +112,14 @@ export interface Events extends LoggerEvents {
 
   // Process events
   serversUpdated: {
-    servers: { host: string; command: string }[]
+    servers: { host: string; command: string; serverAuthKey: string }[]
   }
   receivedToken: AuthTokenResponse
+
+  // Session events - one of these is emitted when the command process ends
+  sessionCompleted: {} // Command exited with a 0 status
+  sessionFailed: {} // Command exited with a nonzero status
+  sessionCancelled: {} // Command exited because of an interrupt signal (e.g. CTRL-C)
 
   // Watcher events
   configAdded: {
@@ -123,7 +144,8 @@ export interface Events extends LoggerEvents {
   moduleRemoved: {}
 
   // Command/project metadata events
-  commandInfo: CommandInfo
+  commandInfo: CommandInfoPayload
+
   // Stack Graph events
   stackGraph: RenderedActionGraph
 
@@ -258,9 +280,58 @@ export interface Events extends LoggerEvents {
     index: number
     durationMsec: number
   }
+
+  // Cloud UI events
+  buildRequested: {
+    moduleName: string
+    force: boolean
+  }
+  deployRequested: {
+    serviceName: string
+    devMode: boolean
+    hotReload: boolean
+    localMode: boolean
+    force: boolean
+    forceBuild: boolean
+    skipDependencies: boolean
+  }
+  testRequested: {
+    moduleName: string
+    force: boolean
+    forceBuild: boolean
+    testNames?: string[] // If not provided, run all tests for the module
+    skipDependencies: boolean
+  }
+  taskRequested: {
+    taskName: string
+    force: boolean
+    forceBuild: boolean
+  }
+  setBuildOnWatch: {
+    moduleName: string
+    build: boolean
+  }
+  setDeployOnWatch: {
+    serviceName: string
+    deploy: boolean
+  }
+  setTestOnWatch: {
+    moduleName: string
+    test: boolean
+  }
 }
 
 export type EventName = keyof Events
+
+/**
+ * These events indicate a request from Cloud to Core.
+ */
+export const cloudRequestEventNames: EventName[] = [
+  "buildRequested",
+  "deployRequested",
+  "testRequested",
+  "taskRequested",
+]
 
 // Note: Does not include logger events.
 export const pipedEventNames: EventName[] = [
@@ -268,6 +339,9 @@ export const pipedEventNames: EventName[] = [
   "_restart",
   "_test",
   "_workflowRunRegistered",
+  "sessionCompleted",
+  "sessionFailed",
+  "sessionCancelled",
   "configAdded",
   "configRemoved",
   "internalError",
@@ -298,4 +372,8 @@ export const pipedEventNames: EventName[] = [
   "workflowStepError",
   "workflowStepProcessing",
   "workflowStepSkipped",
+  "buildRequested",
+  "deployRequested",
+  "testRequested",
+  "taskRequested",
 ]

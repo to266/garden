@@ -16,7 +16,7 @@ hosted Kubernetes providers, and for configuring your Garden project to connect 
 
 ## Requirements
 
-Garden is committed to supporting the _latest six_ stable versions of Kubernetes (i.e. if the latest stable version is v1.21.x, Garden supports v1.16.x and newer). Any conformant cluster should work fine.
+Garden is committed to supporting [the _latest six_ stable versions (i.e. if the latest stable version is v1.23.x, Garden supports v1.18.x and newer)](https://kubernetes.io/releases/). Any conformant cluster should work fine.
 
 Using [in-cluster building](./in-cluster-building.md) introduces additional requirements. Please look at the [in-cluster building guide](./in-cluster-building.md) for details.
 
@@ -92,13 +92,11 @@ images when deploying. This should generally be a _private_ container registry, 
 public registry.
 
 Similarly to the below TLS configuration, you may also need to set up auth for the registry using K8s Secrets, in this
-case via the `kubectl create secret docker-registry` helper.
+case via the `kubectl create secret docker-registry` helper. You can read more about using and setting up private
+registries [here](https://kubernetes.io/docs/concepts/containers/images/#using-a-private-registry).
 
 _Note that you do not need to configure the authentication and imagePullSecrets when using GKE along with GCR,
 as long as your deployment registry is in the same project as the GKE cluster._
-
-The lovely folks at Heptio have prepared good guides on how to configure private registries
-for Kubernetes, which you can find [here](http://docs.heptio.com/content/private-registries.html).
 
 Once you've created the auth secret in the cluster, you can configure the registry and the secrets in your
 `garden.yml` project config like this:
@@ -131,12 +129,39 @@ to your registry's documentation on how to do that (for Docker Hub you simply ru
 
 ### Ingress, TLS and DNS
 
-By default, Garden will not install an ingress controller for remote environments. This can be toggled by setting the [`setupIngressController` flag](../reference/providers/kubernetes.md#providerssetupingresscontroller) to `nginx`. Alternatively, you can set up your own ingress controller, e.g. using [Traefik](https://traefik.io/), [Ambassador](https://www.getambassador.io/) or [Istio](https://istio.io/). You can find examples for [using Garden with Ambassador](https://github.com/garden-io/garden/tree/0.12.25/examples/ambassador) and [with Istio](https://github.com/garden-io/garden/tree/0.12.25/examples/istio) in our [examples directory](https://github.com/garden-io/garden/tree/0.12.25/examples).
+By default, Garden will not install an ingress controller for remote environments. This can be toggled by setting the [`setupIngressController` flag](../reference/providers/kubernetes.md#providerssetupingresscontroller) to `nginx`. Alternatively, you can set up your own ingress controller, e.g. using [Traefik](https://traefik.io/), [Ambassador](https://www.getambassador.io/) or [Istio](https://istio.io/). You can find an example for [using Garden with Istio](https://github.com/garden-io/garden/tree/0.12.45/examples/istio) in our [examples directory](https://github.com/garden-io/garden/tree/0.12.45/examples).
 
 You'll also need to point one or more DNS entries to your cluster, and configure a TLS certificate for the hostnames
 you will expose for ingress.
-_How you configure DNS and prepare the certificates will depend on how you manage DNS and certificates in general,
-so we won't cover that in detail here._
+
+Templating the ingress to the application enables you to have DNS entries for every developer's namespace.
+
+First, you will make DNS CNAME entry that points to the load balancer in front of your cluster. We recommend setting a wildcard in front of the proper record, e.g. *.<environment>.<your company>.com.
+
+In your project.garden.yaml file, templatize the hostnames for each environment. You can use some of the built-in templating functions garden provides such as the local username.
+
+```yml
+kind: Project
+name: my-project
+defaultEnvironment: dev
+environments:
+  - name: dev
+    defaultNamespace: ${var.username}-my-project
+    variables:
+        hostname: ${local.username}-my-project.dev.mydomain.com
+ - name: preview
+    defaultNamespace: preview-${local.env.PR_NUMBER}
+    variables:
+        hostname: ${local.env.PR_NUMBER}-my-project.preview.mydomain.com
+providers:
+  - name: kubernetes
+    environments: [dev, preview]
+    namespace: ${environment.namespace}
+    buildMode: cluster-buildkit
+    defaultHostname: ${var.hostname}
+```
+
+If you would like to manage TLS for development environments, we recommend using your cloud provider's certificate management service in combination with a load balancer. You can find the documentation for [AWS here](https://aws.amazon.com/premiumsupport/knowledge-center/associate-acm-certificate-alb-nlb/) and for [GCP here](https://cloud.google.com/load-balancing/docs/ssl-certificates/google-managed-certs).
 
 If you are using [cert-manager](https://github.com/jetstack/cert-manager) (or would like to use it) to manage your TLS certificates, you may want to check out the [cert-manager integration](../advanced/cert-manager-integration.md), which helps to automate some of the otherwise manual work involved in managing certificates.
 

@@ -1,44 +1,138 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import dedent = require("dedent")
-
 import {
+  joi,
   joiArray,
   joiIdentifier,
+  joiIdentifierDescription,
   joiProviderName,
-  joi,
+  joiSparseArray,
   joiStringMap,
   StringMap,
-  joiIdentifierDescription,
-  joiSparseArray,
 } from "../../config/common"
-import { Provider, providerConfigBaseSchema, BaseProviderConfig } from "../../config/provider"
+import { BaseProviderConfig, Provider, providerConfigBaseSchema } from "../../config/provider"
 import {
-  containerRegistryConfigSchema,
-  ContainerRegistryConfig,
-  commandExample,
-  containerEnvVarsSchema,
-  containerArtifactSchema,
-  ContainerEnvVars,
   artifactsDescription,
+  commandExample,
+  containerArtifactSchema,
+  containerDevModeSchema,
+  ContainerDevModeSpec,
+  ContainerEnvVars,
+  containerEnvVarsSchema,
+  containerLocalModeSchema,
+  ContainerLocalModeSpec,
+  ContainerRegistryConfig,
+  containerRegistryConfigSchema,
+  syncDefaultDirectoryModeSchema,
+  syncDefaultFileModeSchema,
+  syncDefaultGroupSchema,
+  syncDefaultOwnerSchema,
+  syncExcludeSchema,
 } from "../container/config"
 import { PluginContext } from "../../plugin-context"
-import { deline } from "../../util/string"
+import { dedent, deline } from "../../util/string"
 import { defaultSystemNamespace } from "./system"
-import { hotReloadableKinds, HotReloadableKind } from "./hot-reload/hot-reload"
-import { baseTaskSpecSchema, BaseTaskSpec, cacheResultSchema } from "../../config/task"
-import { baseTestSpecSchema, BaseTestSpec } from "../../config/test"
+import { SyncableKind, syncableKinds } from "./hot-reload/hot-reload"
+import { BaseTaskSpec, baseTaskSpecSchema, cacheResultSchema } from "../../config/task"
+import { BaseTestSpec, baseTestSpecSchema } from "../../config/test"
 import { ArtifactSpec } from "../../config/validation"
 import { V1Toleration } from "@kubernetes/client-node"
 import { runPodSpecIncludeFields } from "./run"
+import { KUBECTL_DEFAULT_TIMEOUT } from "./kubectl"
+import { devModeGuideLink } from "./dev-mode"
+import { localModeGuideLink } from "./local-mode"
 
-export const DEFAULT_KANIKO_IMAGE = "gcr.io/kaniko-project/executor:v1.6.0-debug"
+export const DEFAULT_KANIKO_IMAGE = "gcr.io/kaniko-project/executor:v1.8.1-debug"
+
+export interface KubernetesDevModeSpec extends ContainerDevModeSpec {
+  containerName?: string
+}
+
+export interface KubernetesDevModeDefaults {
+  exclude?: string[]
+  fileMode?: number
+  directoryMode?: number
+  owner?: number | string
+  group?: number | string
+}
+
+export const kubernetesDevModeSchema = () =>
+  containerDevModeSchema().keys({
+    containerName: joiIdentifier().description(
+      `Optionally specify the name of a specific container to sync to. If not specified, the first container in the workload is used.`
+    ),
+  }).description(dedent`
+    Specifies which files or directories to sync to which paths inside the running containers of the service when it's in dev mode, and overrides for the container command and/or arguments.
+
+    Note that \`serviceResource\` must also be specified to enable dev mode.
+
+    Dev mode is enabled when running the \`garden dev\` command, and by setting the \`--dev\` flag on the \`garden deploy\` command.
+
+    See the [Code Synchronization guide](${devModeGuideLink}) for more information.
+  `)
+/**
+ * Provider-level dev mode settings for the local and remote k8s providers.
+ */
+export const kubernetesDevModeDefaultsSchema = () =>
+  joi.object().keys({
+    exclude: syncExcludeSchema().description(dedent`
+        Specify a list of POSIX-style paths or glob patterns that should be excluded from the sync.
+
+        Any exclusion patterns defined in individual dev mode sync specs will be applied in addition to these patterns.
+
+        \`.git\` directories and \`.garden\` directories are always ignored.
+      `),
+    fileMode: syncDefaultFileModeSchema(),
+    directoryMode: syncDefaultDirectoryModeSchema(),
+    owner: syncDefaultOwnerSchema(),
+    group: syncDefaultGroupSchema(),
+  }).description(dedent`
+    Specifies default settings for dev mode syncs (e.g. for \`container\`, \`kubernetes\` and \`helm\` services).
+
+    These are overridden/extended by the settings of any individual dev mode sync specs for a given module or service.
+
+    Dev mode is enabled when running the \`garden dev\` command, and by setting the \`--dev\` flag on the \`garden deploy\` command.
+
+    See the [Code Synchronization guide](${devModeGuideLink}) for more information.
+  `)
+
+export interface KubernetesLocalModeSpec extends ContainerLocalModeSpec {
+  containerName?: string
+}
+
+export const kubernetesLocalModeSchema = () =>
+  containerLocalModeSchema().keys({
+    containerName: joi
+      .string()
+      .optional()
+      .description(
+        "The name of the target container. The first available container will be used if this field is not defined."
+      ),
+  }).description(dedent`
+    Configures the local application which will send and receive network requests instead of the target resource specified by \`serviceResource\`.
+
+    Note that \`serviceResource\` must also be specified to enable local mode. Local mode configuration for the \`kubernetes\` module type relies on the \`serviceResource.kind\` and \`serviceResource.name\` fields to select a target Kubernetes resource.
+
+    The \`serviceResource.containerName\` field is not used by local mode configuration.
+    Note that \`localMode\` uses its own field \`containerName\` to specify a target container name explicitly.
+
+    The selected container of the target Kubernetes resource will be replaced by a proxy container which runs an SSH server to proxy requests.
+    Reverse port-forwarding will be automatically configured to route traffic to the locally deployed application and back.
+
+    Local mode is enabled by setting the \`--local\` option on the \`garden deploy\` or \`garden dev\` commands.
+    Local mode always takes the precedence over dev mode if there are any conflicting service names.
+
+    Health checks are disabled for services running in local mode.
+
+    See the [Local Mode guide](${localModeGuideLink}) for more information.
+  `)
+
 export interface ProviderSecretRef {
   name: string
   namespace: string
@@ -106,14 +200,26 @@ export interface NamespaceConfig {
   labels?: StringMap
 }
 
+export interface ClusterBuildkitCacheConfig {
+  type: "registry"
+  mode: "min" | "max" | "inline" | "auto"
+  tag: string
+  export: boolean
+  registry?: ContainerRegistryConfig
+}
+
 export interface KubernetesConfig extends BaseProviderConfig {
   buildMode: ContainerBuildMode
   clusterBuildkit?: {
+    cache: ClusterBuildkitCacheConfig[]
     rootless?: boolean
     nodeSelector?: StringMap
   }
   clusterDocker?: {
     enableBuildKit?: boolean
+  }
+  jib?: {
+    pushViaCluster?: boolean
   }
   kaniko?: {
     image?: string
@@ -126,12 +232,17 @@ export interface KubernetesConfig extends BaseProviderConfig {
   defaultHostname?: string
   deploymentRegistry?: ContainerRegistryConfig
   deploymentStrategy?: DeploymentStrategy
+  devMode?: {
+    defaults?: KubernetesDevModeDefaults
+  }
   forceSsl: boolean
   imagePullSecrets: ProviderSecretRef[]
+  copySecrets: ProviderSecretRef[]
   ingressHttpPort: number
   ingressHttpsPort: number
   ingressClass?: string
   kubeconfig?: string
+  kubectlPath?: string
   namespace?: NamespaceConfig
   registryProxyTolerations: V1Toleration[]
   setupIngressController: string | null
@@ -275,6 +386,12 @@ const storageSchema = (defaults: KubernetesStorageSpec, deprecated: boolean) =>
     })
     .default(defaults)
 
+export const k8sDeploymentTimeoutSchema = () =>
+  joi
+    .number()
+    .default(KUBECTL_DEFAULT_TIMEOUT)
+    .description("The maximum duration (in seconds) to wait for resources to deploy and become healthy.")
+
 export const k8sContextSchema = () =>
   joi
     .string()
@@ -300,6 +417,12 @@ const imagePullSecretsSchema = () =>
     References to \`docker-registry\` secrets to use for authenticating with remote registries when pulling
     images. This is necessary if you reference private images in your module configuration, and is required
     when configuring a remote Kubernetes environment with buildMode=local.
+  `)
+
+const copySecretsSchema = () =>
+  joiSparseArray(secretRef).description(dedent`
+    References to secrets you need to have copied into all namespaces deployed to. These secrets will be
+    ensured to exist in the namespace before deploying any service.
   `)
 
 const tlsCertificateSchema = () =>
@@ -333,11 +456,72 @@ const tlsCertificateSchema = () =>
       .example("cert-manager"),
   })
 
+const buildkitCacheConfigurationSchema = () =>
+  joi.object().keys({
+    type: joi
+      .string()
+      .valid("registry")
+      .required()
+      .description(
+        dedent`
+          Use the Docker registry configured at \`deploymentRegistry\` to retrieve and store buildkit cache information.
+
+          See also the [buildkit registry cache documentation](https://github.com/moby/buildkit#registry-push-image-and-cache-separately)
+        `
+      ),
+    registry: containerRegistryConfigSchema().description(
+      dedent`
+      The registry from which the cache should be imported from, or which it should be exported to.
+
+      If not specified, use the configured \`deploymentRegistry\` in your kubernetes provider config, or the internal in-cluster registry in case \`deploymentRegistry\` is not set.
+
+      Important: You must make sure \`imagePullSecrets\` includes authentication with the specified cache registry, that has the appropriate write privileges (usually full write access to the configured \`namespace\`).
+    `
+    ),
+    mode: joi
+      .string()
+      .valid("auto", "min", "max", "inline")
+      .default("auto")
+      .description(
+        dedent`
+        This is the buildkit cache mode to be used.
+
+        The value \`inline\` ensures that garden is using the buildkit option \`--export-cache inline\`. Cache information will be inlined and co-located with the Docker image itself.
+
+        The values \`min\` and \`max\` ensure that garden passes the \`mode=max\` or \`mode=min\` modifiers to the buildkit \`--export-cache\` option. Cache manifests will only be
+        stored stored in the configured \`tag\`.
+
+        \`auto\` is the same as \`max\` for most registries. Some popular registries do not support \`max\` and garden will fall back to \`inline\` for them.
+         See the [clusterBuildkit cache option](#providers-.clusterbuildkit.cache) for a description of the detection mechanism.
+
+        See also the [buildkit export cache documentation](https://github.com/moby/buildkit#export-cache)
+      `
+      ),
+    tag: joi
+      .string()
+      .default("_buildcache")
+      .description(
+        dedent`
+        This is the Docker registry tag name buildkit should use for the registry build cache. Default is \`_buildcache\`
+
+        **NOTE**: \`tag\` can only be used together with the \`registry\` cache type
+      `
+      ),
+    export: joi
+      .boolean()
+      .default(true)
+      .description(
+        dedent`
+        If this is false, only pass the \`--import-cache\` option to buildkit, and not the \`--export-cache\` option. Defaults to true.
+      `
+      ),
+  })
+
 export const kubernetesConfigBase = () =>
   providerConfigBaseSchema().keys({
     buildMode: joi
       .string()
-      .allow("local-docker", "cluster-docker", "kaniko", "cluster-buildkit")
+      .valid("local-docker", "cluster-docker", "kaniko", "cluster-buildkit")
       .default("local-docker")
       .description(
         dedent`
@@ -351,6 +535,78 @@ export const kubernetesConfigBase = () =>
     clusterBuildkit: joi
       .object()
       .keys({
+        cache: joi
+          .array()
+          .items(buildkitCacheConfigurationSchema())
+          .default([{ type: "registry", mode: "auto", tag: "_buildcache", export: true }])
+          .description(
+            dedent`
+            Use the \`cache\` configuration to customize the default cluster-buildkit cache behaviour.
+
+            The default value is:
+            \`\`\`yaml
+            clusterBuildkit:
+              cache:
+                - type: registry
+                  mode: auto
+            \`\`\`
+
+            For every build, this will
+            - import cached layers from a docker image tag named \`_buildcache\`
+            - when the build is finished, upload cache information to \`_buildcache\`
+
+            For registries that support it, \`mode: auto\` (the default) will enable the buildkit \`mode=max\`
+            option.
+
+            Some registries are known not to support the cache manifests needed for the \`mode=max\` option, so
+            we will avoid using \`mode=max\` with them.
+
+            See the following table for details on our detection mechanism:
+
+            | Registry Name                   | Detection string | Assumed \`mode=max\` support |
+            |---------------------------------|------------------|------------------------------|
+            | AWS Elastic Container Registry  | \`.dkr.ecr.\`    | No                           |
+            | Google Cloud Container Registry | \`gcr.io\`       | No                           |
+            | Any other registry              | -                | Yes                          |
+
+            In case you need to override the defaults for your registry, you can do it like so:
+
+            \`\`\`yaml
+            clusterBuildkit:
+              cache:
+                - type: registry
+                  mode: inline
+            \`\`\`
+
+            When you add multiple caches, we will make sure to pass the \`--import-cache\` options to buildkit in the same
+            order as provided in the cache configuration. This is because buildkit will not actually use all imported caches
+            for every build, but it will stick with the first cache that yields a cache hit for all the following layers.
+
+            An example for this is the following:
+
+            \`\`\`yaml
+            clusterBuildkit:
+              cache:
+                - type: registry
+                  tag: _buildcache-\${slice(kebabCase(git.branch), "0", "30")}
+                - type: registry
+                  tag: _buildcache-main
+                  export: false
+            \`\`\`
+
+            Using this cache configuration, every build will first look for a cache specific to your feature branch.
+            If it does not exist yet, it will import caches from the main branch builds (\`_buildcache-main\`).
+            When the build is finished, it will only export caches to your feature branch, and avoid polluting the \`main\` branch caches.
+            A configuration like that may improve your cache hit rate and thus save time.
+
+            If you need to disable caches completely you can achieve that with the following configuration:
+
+            \`\`\`yaml
+            clusterBuildkit:
+              cache: []
+            \`\`\`
+            `
+          ),
         rootless: joi
           .boolean()
           .default(false)
@@ -371,7 +627,7 @@ export const kubernetesConfigBase = () =>
           .example({ disktype: "ssd" })
           .default(() => ({})),
       })
-      .default(() => {})
+      .default(() => ({}))
       .description("Configuration options for the `cluster-buildkit` build mode."),
     clusterDocker: joi
       .object()
@@ -387,14 +643,25 @@ export const kubernetesConfigBase = () =>
           )
           .meta({ deprecated: true }),
       })
-      .default(() => {})
+      .default(() => ({}))
       .description("Configuration options for the `cluster-docker` build mode.")
       .meta({ deprecated: "The cluster-docker build mode has been deprecated." }),
+    jib: joi
+      .object()
+      .keys({
+        pushViaCluster: joi
+          .boolean()
+          .default(false)
+          .description(
+            "In some cases you may need to push images built with Jib to the remote registry via Kubernetes cluster, e.g. if you don't have connectivity or access from where Garden is being run. In that case, set this flag to true, but do note that the build will take considerably take longer to complete! Only applies when using in-cluster building."
+          ),
+      })
+      .description("Setting related to Jib image builds."),
     kaniko: joi
       .object()
       .keys({
         extraFlags: joi
-          .array()
+          .sparseArray()
           .items(joi.string())
           .description(
             `Specify extra flags to use when building the container image with kaniko. Flags set on \`container\` modules take precedence over these.`
@@ -437,14 +704,22 @@ export const kubernetesConfigBase = () =>
       .allow("rolling", "blue-green")
       .description(
         dedent`
-        Defines the strategy for deploying the project services.
-        Default is "rolling update" and there is experimental support for "blue/green" deployment.
-        The feature only supports modules of type \`container\`: other types will just deploy using the default strategy.
-      `
+          Sets the deployment strategy for \`container\` services.
+
+          The default is \`"rolling"\`, which performs rolling updates. There is also experimental support for blue/green deployments (via the \`"blue-green"\` strategy).
+
+          Note that this setting only applies to \`container\` services (and not, for example,  \`kubernetes\` or \`helm\` services).
+        `
       )
       .meta({
         experimental: true,
       }),
+    devMode: joi
+      .object()
+      .keys({
+        defaults: kubernetesDevModeDefaultsSchema(),
+      })
+      .description("Configuration options for dev mode."),
     forceSsl: joi
       .boolean()
       .default(false)
@@ -463,6 +738,7 @@ export const kubernetesConfigBase = () =>
       )
       .meta({ internal: true }),
     imagePullSecrets: imagePullSecretsSchema(),
+    copySecrets: copySecretsSchema(),
     // TODO: invert the resources and storage config schemas
     resources: joi
       .object()
@@ -673,12 +949,22 @@ export const namespaceSchema = () =>
     Note that the framework may generate other namespaces as well with this name as a prefix. Also note that if the namespace previously exists, Garden will attempt to add the specified labels and annotations. If the user does not have permissions to do so, a warning is shown.
   `)
 
+const kubectlPathExample = "${local.env.GARDEN_KUBECTL_PATH}?"
+
 export const configSchema = () =>
   kubernetesConfigBase()
     .keys({
       name: joiProviderName("kubernetes"),
       context: k8sContextSchema().required(),
-      deploymentRegistry: containerRegistryConfigSchema().allow(null),
+      deploymentRegistry: containerRegistryConfigSchema()
+        .description(
+          dedent`
+      The registry where built containers should be pushed to, and then pulled to the cluster when deploying services.
+
+      Important: If you specify this in combination with in-cluster building, you must make sure \`imagePullSecrets\` includes authentication with the specified deployment registry, that has the appropriate write privileges (usually full write access to the configured \`deploymentRegistry.namespace\`).
+    `
+        )
+        .allow(null),
       ingressClass: joi.string().description(dedent`
         The ingress class to use on configured Ingresses (via the \`kubernetes.io/ingress.class\` annotation)
         when deploying \`container\` services. Use this if you have multiple ingress controllers in your cluster.
@@ -691,9 +977,14 @@ export const configSchema = () =>
         .number()
         .default(443)
         .description("The external HTTPS port of the cluster's ingress controller."),
-      kubeconfig: joi
-        .posixPath()
-        .description("Path to kubeconfig file to use instead of the system default. Must be a POSIX-style path."),
+      kubeconfig: joi.string().description("Path to kubeconfig file to use instead of the system default."),
+      kubectlPath: joi.string().description(dedent`
+        Set a specific path to a kubectl binary, instead of having Garden download it automatically as required.
+
+        It may be useful in some scenarios to allow individual users to set this, e.g. with an environment variable. You could configure that with something like \`kubectlPath: ${kubectlPathExample}\`.
+
+        **Warning**: Garden may make some assumptions with respect to the kubectl version, so it is suggested to only use this when necessary.
+      `),
       namespace: namespaceSchema(),
       setupIngressController: joi
         .string()
@@ -704,7 +995,7 @@ export const configSchema = () =>
     .unknown(false)
 
 export interface ServiceResourceSpec {
-  kind?: HotReloadableKind
+  kind?: SyncableKind
   name?: string
   containerName?: string
   podSelector?: { [key: string]: string }
@@ -740,7 +1031,7 @@ export const serviceResourceSchema = () =>
     .keys({
       kind: joi
         .string()
-        .valid(...hotReloadableKinds)
+        .valid(...syncableKinds)
         .default("Deployment")
         .description("The type of Kubernetes resource to sync files to."),
       name: joi.string().description(
@@ -758,7 +1049,6 @@ export const serviceResourceSchema = () =>
         `
       ),
     })
-    .oxor("podSelector", "kind")
     .oxor("podSelector", "name")
 
 export const containerModuleSchema = () =>
@@ -775,7 +1065,7 @@ export const containerModuleSchema = () =>
 
 export const hotReloadArgsSchema = () =>
   joi
-    .array()
+    .sparseArray()
     .items(joi.string())
     .description("If specified, overrides the arguments for the main container when running in hot-reload mode.")
     .example(["nodemon", "my-server.js"])
@@ -813,7 +1103,7 @@ export const portForwardsSchema = () =>
       "Manually specify port forwards that Garden should set up when deploying in dev or watch mode. If specified, these override the auto-detection of forwardable ports, so you'll need to specify the full list of port forwards to create."
     )
 
-const runPodSpecWhitelistDescription = runPodSpecIncludeFields.map((f) => `* \`${f}\``).join("\n")
+const runPodSpecWhitelistDescription = () => runPodSpecIncludeFields.map((f) => `* \`${f}\``).join("\n")
 
 export const kubernetesTaskSchema = () =>
   baseTaskSpecSchema()
@@ -826,16 +1116,16 @@ export const kubernetesTaskSchema = () =>
         ${serviceResourceDescription}
 
         The following pod spec fields from the service resource will be used (if present) when executing the task:
-        ${runPodSpecWhitelistDescription}`
+        ${runPodSpecWhitelistDescription()}`
       ),
       cacheResult: cacheResultSchema(),
       command: joi
-        .array()
+        .sparseArray()
         .items(joi.string().allow(""))
         .description("The command/entrypoint used to run the task inside the container.")
         .example(commandExample),
       args: joi
-        .array()
+        .sparseArray()
         .items(joi.string().allow(""))
         .description("The arguments to pass to the container used for execution.")
         .example(["rake", "db:migrate"]),
@@ -855,15 +1145,15 @@ export const kubernetesTestSchema = () =>
         ${serviceResourceDescription}
 
         The following pod spec fields from the service resource will be used (if present) when executing the test suite:
-        ${runPodSpecWhitelistDescription}`
+        ${runPodSpecWhitelistDescription()}`
       ),
       command: joi
-        .array()
+        .sparseArray()
         .items(joi.string().allow(""))
         .description("The command/entrypoint used to run the test inside the container.")
         .example(commandExample),
       args: joi
-        .array()
+        .sparseArray()
         .items(joi.string().allow(""))
         .description("The arguments to pass to the container used for testing.")
         .example(["npm", "test"]),

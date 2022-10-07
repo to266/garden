@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -11,7 +11,7 @@ import { resolve, relative, join } from "path"
 import Bluebird from "bluebird"
 import { STATIC_DIR, GARDEN_CLI_ROOT, GARDEN_CORE_ROOT } from "@garden-io/core/build/src/constants"
 import { remove, mkdirp, copy, writeFile } from "fs-extra"
-import { exec, getPackageVersion } from "@garden-io/core/build/src/util/util"
+import { exec, getPackageVersion, sleep } from "@garden-io/core/build/src/util/util"
 import { randomString } from "@garden-io/core/build/src/util/string"
 import { pick } from "lodash"
 import minimist from "minimist"
@@ -25,8 +25,12 @@ const tmpDir = resolve(repoRoot, "tmp", "pkg")
 const tmpStaticDir = resolve(tmpDir, "static")
 const pkgPath = resolve(repoRoot, "cli", "node_modules", ".bin", "pkg")
 const pkgFetchPath = resolve(repoRoot, "node_modules", ".bin", "pkg-fetch")
+const prebuildInstallPath = resolve(repoRoot, "node_modules", ".bin", "prebuild-install")
 const distPath = resolve(repoRoot, "dist")
 const sqliteBinFilename = "better_sqlite3.node"
+
+// Allow larger heap size than default
+const nodeOptions = ["max-old-space-size=4096"]
 
 // tslint:disable: no-console
 
@@ -39,14 +43,32 @@ interface TargetHandlerParams {
 
 interface TargetSpec {
   pkgType: string
+  nodeBinaryPlatform: string
   handler: (params: TargetHandlerParams) => Promise<void>
 }
 
 const targets: { [name: string]: TargetSpec } = {
-  "macos-amd64": { pkgType: "node12-macos-x64", handler: pkgMacos },
-  "linux-amd64": { pkgType: "node12-linux-x64", handler: pkgLinux },
-  "windows-amd64": { pkgType: "node12-win-x64", handler: pkgWindows },
-  "alpine-amd64": { pkgType: "node12-alpine-x64", handler: pkgAlpine },
+  "macos-amd64": { pkgType: "node14-macos-x64", handler: pkgMacos, nodeBinaryPlatform: "darwin" },
+  "linux-amd64": { pkgType: "node14-linux-x64", handler: pkgLinux, nodeBinaryPlatform: "linux" },
+  "windows-amd64": { pkgType: "node14-win-x64", handler: pkgWindows, nodeBinaryPlatform: "win32" },
+  "alpine-amd64": { pkgType: "node14-alpine-x64", handler: pkgAlpine, nodeBinaryPlatform: "linuxmusl" },
+}
+
+/**
+ * This function defines the filename format for release packages.
+ *
+ * The format SHOULD NOT be changed since other tools we use depend on it, unless you absolutely know what you're doing.
+ */
+function composePackageFilename(version: string, targetName: string, extension: string): string {
+  return `garden-${version}-${targetName}.${extension}`
+}
+
+export function getZipFilename(version: string, targetName: string): string {
+  return composePackageFilename(version, targetName, "zip")
+}
+
+export function getTarballFilename(version: string, targetName: string): string {
+  return composePackageFilename(version, targetName, "tar.gz")
 }
 
 async function buildBinaries(args: string[]) {
@@ -126,6 +148,7 @@ async function buildBinaries(args: string[]) {
   for (const [targetName, spec] of Object.entries(selected)) {
     await exec(pkgFetchPath, spec.pkgType.split("-"))
     console.log(chalk.green(" ✓ " + targetName))
+    await sleep(5000) // Work around concurrency bug in pkg...
   }
 
   // Run pkg and pack up each platform binary
@@ -133,6 +156,7 @@ async function buildBinaries(args: string[]) {
 
   await Bluebird.map(Object.entries(selected), async ([targetName, spec]) => {
     await spec.handler({ targetName, sourcePath: cliPath, pkgType: spec.pkgType, version })
+    await sleep(5000) // Work around concurrency bug in pkg...
     console.log(chalk.green(" ✓ " + targetName))
   })
 
@@ -179,7 +203,8 @@ async function pkgWindows({ targetName, sourcePath, pkgType, version }: TargetHa
   })
 
   console.log(` - ${targetName} -> zip`)
-  await exec("zip", ["-q", "-r", `garden-${version}-${targetName}.zip`, targetName], { cwd: distPath })
+  const filename = getZipFilename(version, targetName)
+  await exec("zip", ["-q", "-r", filename, targetName], { cwd: distPath })
 }
 
 async function pkgAlpine({ targetName, version }: TargetHandlerParams) {
@@ -196,6 +221,8 @@ async function pkgAlpine({ targetName, version }: TargetHandlerParams) {
 
   await exec("docker", [
     "build",
+    "--platform",
+    "linux/amd64",
     "-t",
     imageName,
     "-f",
@@ -232,14 +259,39 @@ async function pkgCommon({
   await mkdirp(targetPath)
 
   console.log(` - ${targetName} -> pkg`)
-  await exec(pkgPath, ["--target", pkgType, sourcePath, "--output", resolve(targetPath, binFilename)])
+  await exec(pkgPath, [
+    "--target",
+    pkgType,
+    sourcePath,
+    "--public",
+    "--options",
+    nodeOptions.join(","),
+    "--output",
+    resolve(targetPath, binFilename),
+  ])
 
   console.log(` - ${targetName} -> ${sqliteBinFilename}`)
-  await copy(
-    resolve(GARDEN_CORE_ROOT, "lib", "better-sqlite3", `${targetName}-node-v68`, sqliteBinFilename),
-    resolve(targetPath, sqliteBinFilename)
-  )
 
+  // Copy the package to avoid conflicts with other targets
+  const betterSqlitePath = resolve(sourcePath, "node_modules", "better-sqlite3")
+  const tmpRoot = resolve(tmpDir, "better-sqlite3")
+  const tmpPath = resolve(tmpRoot, targetName)
+  await mkdirp(tmpRoot)
+  await remove(tmpPath)
+  await copy(betterSqlitePath, tmpPath)
+
+  const { nodeBinaryPlatform } = targets[targetName]
+
+  await exec(
+    prebuildInstallPath,
+    ["--download", "--runtime", "node", "--arch", "x64", "--platform", nodeBinaryPlatform, "--force"],
+    {
+      cwd: tmpPath,
+    }
+  )
+  await copy(resolve(tmpPath, "build", "Release", sqliteBinFilename), resolve(targetPath, sqliteBinFilename))
+
+  console.log(` - ${targetName} -> static`)
   await copyStatic(targetName)
 }
 
@@ -250,7 +302,7 @@ async function copyStatic(targetName: string) {
 }
 
 async function tarball(targetName: string, version: string): Promise<void> {
-  const filename = `garden-${version}-${targetName}.tar.gz`
+  const filename = getTarballFilename(version, targetName)
   console.log(` - ${targetName} -> tar (${filename})`)
 
   await exec("tar", ["-czf", filename, targetName], { cwd: distPath })

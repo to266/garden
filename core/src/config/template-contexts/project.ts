@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,6 +14,7 @@ import { deline, dedent } from "../../util/string"
 import { schema, ConfigContext, ContextKeySegment, EnvironmentContext } from "./base"
 import { CommandInfo } from "../../plugin-context"
 import { Garden } from "../../garden"
+import { VcsInfo } from "../../vcs/vcs"
 
 class LocalContext extends ConfigContext {
   @schema(
@@ -37,10 +38,20 @@ class LocalContext extends ConfigContext {
     joi
       .string()
       .description(
+        "A string indicating the architecture that the framework is running on " +
+          "(see https://nodejs.org/api/process.html#process_process_arch)"
+      )
+      .example("x64")
+  )
+  public arch: string
+  @schema(
+    joi
+      .string()
+      .description(
         "A string indicating the platform that the framework is running on " +
           "(see https://nodejs.org/api/process.html#process_process_platform)"
       )
-      .example("posix")
+      .example("linux")
   )
   public platform: string
 
@@ -71,6 +82,7 @@ class LocalContext extends ConfigContext {
   constructor(root: ConfigContext, artifactsPath: string, projectRoot: string, username?: string) {
     super(root)
     this.artifactsPath = artifactsPath
+    this.arch = process.arch
     this.env = process.env
     this.platform = process.platform
     this.projectPath = projectRoot
@@ -89,7 +101,42 @@ class ProjectContext extends ConfigContext {
   }
 }
 
-class GitContext extends ConfigContext {
+class DatetimeContext extends ConfigContext {
+  @schema(
+    joi
+      .string()
+      .description("The current UTC date and time, at time of template resolution, in ISO-8601 format.")
+      .example("2011-10-05T14:48:00.000Z")
+  )
+  public now: string
+
+  @schema(
+    joi
+      .string()
+      .description("The current UTC date, at time of template resolution, in ISO-8601 format.")
+      .example("2011-10-05")
+  )
+  public today: string
+
+  @schema(
+    joi
+      .string()
+      .description("The current UTC Unix timestamp (in seconds), at time of template resolution.")
+      .example(1642005235)
+  )
+  public timestamp: number
+
+  constructor(root: ConfigContext) {
+    super(root)
+    const now = new Date()
+
+    this.now = now.toISOString()
+    this.today = this.now.slice(0, 10)
+    this.timestamp = Math.round(now.getTime() / 1000)
+  }
+}
+
+class VcsContext extends ConfigContext {
   @schema(
     joi
       .string()
@@ -101,18 +148,48 @@ class GitContext extends ConfigContext {
           When using remote sources, the branch used is that of the project/top-level repository (the one that contains
           the project configuration).
 
-          The branch is computed at the start of the Garden command's execution, and is not updated if the current
-          branch changes during the command's execution (which could happen, for example, when using watch-mode
-          commands).
+          The branch is resolved at the start of the Garden command's execution, and is not updated if the current branch changes during the command's execution (which could happen, for example, when using watch-mode commands).
         `
       )
       .example("my-feature-branch")
   )
   public branch: string
 
-  constructor(root: ConfigContext, branch: string) {
+  @schema(
+    joi
+      .string()
+      .description(
+        dedent`
+          The current Git commit hash, if available. Resolves to an empty string if the repository has no commits.
+
+          When using remote sources, the hash used is that of the project/top-level repository (the one that contains the project configuration).
+
+          The hash is resolved at the start of the Garden command's execution, and is not updated if the current commit changes during the command's execution (which could happen, for example, when using watch-mode commands).
+        `
+      )
+      .example("my-feature-branch")
+  )
+  public commitHash: string
+
+  @schema(
+    joi
+      .string()
+      .description(
+        dedent`
+          The remote origin URL of the project Git repository.
+
+          When using remote sources, the URL is that of the project/top-level repository (the one that contains the project configuration).
+        `
+      )
+      .example("my-feature-branch")
+  )
+  public originUrl: string
+
+  constructor(root: ConfigContext, info: VcsInfo) {
     super(root)
-    this.branch = branch
+    this.branch = info.branch
+    this.commitHash = info.commitHash
+    this.originUrl = info.originUrl
   }
 }
 
@@ -155,13 +232,13 @@ class CommandContext extends ConfigContext {
   }
 }
 
-interface DefaultEnvironmentContextParams {
+export interface DefaultEnvironmentContextParams {
   projectName: string
   projectRoot: string
   artifactsPath: string
-  branch: string
   username?: string
   commandInfo: CommandInfo
+  vcsInfo: VcsInfo
 }
 
 /**
@@ -178,25 +255,27 @@ export class DefaultEnvironmentContext extends ConfigContext {
   @schema(CommandContext.getSchema().description("Information about the currently running command and its arguments."))
   public command: CommandContext
 
+  @schema(DatetimeContext.getSchema().description("Information about the date/time at template resolution time."))
+  public datetime: DatetimeContext
+
   @schema(ProjectContext.getSchema().description("Information about the Garden project."))
   public project: ProjectContext
 
-  @schema(
-    GitContext.getSchema().description("Information about the current state of the project's local git repository.")
-  )
-  public git: GitContext
+  @schema(VcsContext.getSchema().description("Information about the current state of the project's Git repository."))
+  public git: VcsContext
 
   constructor({
     projectName,
     projectRoot,
     artifactsPath,
-    branch,
+    vcsInfo,
     username,
     commandInfo,
   }: DefaultEnvironmentContextParams) {
     super()
     this.local = new LocalContext(this, artifactsPath, projectRoot, username)
-    this.git = new GitContext(this, branch)
+    this.datetime = new DatetimeContext(this)
+    this.git = new VcsContext(this, vcsInfo)
     this.project = new ProjectContext(this, projectName)
     this.command = new CommandContext(this, commandInfo)
   }
@@ -235,7 +314,7 @@ export class ProjectConfigContext extends DefaultEnvironmentContext {
 
     if (!this._loggedIn) {
       return dedent`
-        You are not logged in to Garden Enterprise, but one or more secrets are referenced in template strings in your Garden configuration files.
+        You are not logged in to Garden Cloud, but one or more secrets are referenced in template strings in your Garden configuration files.
 
         Please log in via the ${chalk.green("garden login")} command to use Garden with secrets.
       `
@@ -248,11 +327,11 @@ export class ProjectConfigContext extends DefaultEnvironmentContext {
         ? ` To create secrets, please visit ${this._enterpriseDomain} and navigate to the secrets section for this project.`
         : ""
       return deline`
-        Looks like no secrets have been created for this project and/or environment in Garden Enterprise.${suffix}
+        Looks like no secrets have been created for this project and/or environment in Garden Cloud.${suffix}
       `
     } else {
       return deline`
-        Please make sure that all required secrets for this project exist in Garden Enterprise, and are accessible in this
+        Please make sure that all required secrets for this project exist in Garden Cloud, and are accessible in this
         environment.
       `
     }
@@ -321,10 +400,10 @@ export class RemoteSourceConfigContext extends EnvironmentConfigContext {
       projectName: garden.projectName,
       projectRoot: garden.projectRoot,
       artifactsPath: garden.artifactsPath,
-      branch: garden.vcsBranch,
+      vcsInfo: garden.vcsInfo,
       username: garden.username,
-      loggedIn: !!garden.enterpriseApi,
-      enterpriseDomain: garden.enterpriseApi?.domain,
+      loggedIn: !!garden.cloudApi,
+      enterpriseDomain: garden.cloudApi?.domain,
       secrets: garden.secrets,
       commandInfo: garden.commandInfo,
       variables,

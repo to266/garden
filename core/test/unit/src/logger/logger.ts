@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,15 +9,14 @@
 import { expect } from "chai"
 
 import { getLogger, Logger, LogLevel } from "../../../../src/logger/logger"
-import { LogEntryEventPayload } from "../../../../src/enterprise/buffered-event-stream"
+import { LogEntryEventPayload } from "../../../../src/cloud/buffered-event-stream"
 import { freezeTime } from "../../../helpers"
 
 const logger: Logger = getLogger()
 
 describe("Logger", () => {
   beforeEach(() => {
-    // tslint:disable-next-line: prettier
-    (logger["children"] as any) = []
+    logger["children"] = []
   })
 
   describe("events", () => {

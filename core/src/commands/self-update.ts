@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -19,7 +19,6 @@ import { RuntimeError } from "../exceptions"
 import { makeTempDir } from "../util/fs"
 import { createReadStream, createWriteStream } from "fs"
 import { copy, mkdirp, move, readdir, remove } from "fs-extra"
-import { Extract } from "unzipper"
 
 const selfUpdateArgs = {
   version: new StringParameter({
@@ -77,7 +76,7 @@ export class SelfUpdateCommand extends Command<SelfUpdateArgs, SelfUpdateOpts> {
   options = selfUpdateOpts
 
   // Overridden during testing
-  _baseReleasesUrl = "https://github.com/garden-io/garden/releases/download/"
+  _baseReleasesUrl = "https://download.garden.io/core/"
 
   printHeader({ headerLog }) {
     printHeader(headerLog, "Update Garden", "rolled_up_newspaper")
@@ -253,6 +252,9 @@ export class SelfUpdateCommand extends Command<SelfUpdateArgs, SelfUpdateOpts> {
       log.info(chalk.white(`Extracting to installation directory ${chalk.cyan(installationDirectory)}...`))
 
       if (extension === "zip") {
+        // Note: lazy-loading for startup performance
+        const { Extract } = require("unzipper")
+
         await new Promise((_resolve, reject) => {
           const extractor = Extract({ path: tempDir.path })
 

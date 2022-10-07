@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,31 +7,31 @@
  */
 
 import Bluebird from "bluebird"
-import { get, flatten, sortBy, omit, chain, sample, isEmpty, find } from "lodash"
+import { get, flatten, sortBy, omit, chain, sample, isEmpty, find, cloneDeep } from "lodash"
 import { V1Pod, V1EnvVar, V1Container, V1PodSpec } from "@kubernetes/client-node"
 import { apply as jsonMerge } from "json-merge-patch"
 import chalk from "chalk"
 import hasha from "hasha"
 
 import { KubernetesResource, KubernetesWorkload, KubernetesPod, KubernetesServerResource, isPodResource } from "./types"
-import { splitLast, serializeValues, findByName } from "../../util/util"
+import { splitLast, serializeValues, findByName, exec } from "../../util/util"
 import { KubeApi, KubernetesError } from "./api"
 import { gardenAnnotationKey, base64, deline, stableStringify } from "../../util/string"
-import { MAX_CONFIGMAP_DATA_SIZE, systemDockerAuthSecretName } from "./constants"
+import { inClusterRegistryHostname, MAX_CONFIGMAP_DATA_SIZE, systemDockerAuthSecretName } from "./constants"
 import { ContainerEnvVars } from "../container/config"
 import { ConfigurationError, DeploymentError, PluginError } from "../../exceptions"
-import { ServiceResourceSpec, KubernetesProvider } from "./config"
+import { ServiceResourceSpec, KubernetesProvider, KubernetesPluginContext } from "./config"
 import { LogEntry } from "../../logger/log-entry"
 import { PluginContext } from "../../plugin-context"
 import { HelmModule } from "./helm/config"
 import { KubernetesModule } from "./kubernetes-module/config"
 import { getChartPath, renderHelmTemplateString } from "./helm/common"
-import { HotReloadableResource } from "./hot-reload/hot-reload"
+import { SyncableResource } from "./hot-reload/hot-reload"
 import { ProviderMap } from "../../config/provider"
 import { PodRunner } from "./run"
 import { isSubset } from "../../util/is-subset"
 import { checkPodStatus } from "./status/pod"
-import { getAppNamespace } from "./namespace"
+import { getModuleNamespace } from "./namespace"
 
 export const skopeoImage = "gardendev/skopeo:1.41.0-2"
 
@@ -114,6 +114,33 @@ export function deduplicatePodsByLabel(pods: KubernetesServerResource<V1Pod>[]) 
     .uniqBy((pod) => JSON.stringify(pod.metadata.labels))
     .value()
   return sortBy([...uniqByLabel, ...noLabel], (pod) => pod.metadata.creationTimestamp)
+}
+
+interface K8sVersion {
+  major: number
+  minor: number
+  gitVersion: string
+  gitCommit: string
+  gitTreeState: string
+  buildDate: Date
+  goVersion: string
+  compiler: string
+  platform: string
+}
+
+export interface K8sClientServerVersions {
+  clientVersion: K8sVersion
+  serverVersion: K8sVersion
+}
+
+/**
+ * get objectyfied result of "kubectl version"
+ */
+export async function getK8sClientServerVersions(ctx: string): Promise<K8sClientServerVersions> {
+  const versions: K8sClientServerVersions = JSON.parse(
+    (await exec("kubectl", ["version", "--context", ctx, "--output", "json"])).stdout
+  )
+  return versions
 }
 
 /**
@@ -515,7 +542,7 @@ export function getServiceResourceSpec(
   let resourceSpec = module.spec.serviceResource || {}
 
   if (baseModule) {
-    resourceSpec = jsonMerge(baseModule.spec.serviceResource || {}, resourceSpec)
+    resourceSpec = jsonMerge(cloneDeep(baseModule.spec.serviceResource || {}), resourceSpec)
   }
 
   if (isEmpty(resourceSpec)) {
@@ -557,12 +584,18 @@ export async function getServiceResource({
   manifests,
   module,
   resourceSpec,
-}: GetServiceResourceParams): Promise<HotReloadableResource> {
+}: GetServiceResourceParams): Promise<SyncableResource> {
   const resourceMsgName = resourceSpec ? "resource" : "serviceResource"
 
   if (resourceSpec.podSelector && !isEmpty(resourceSpec.podSelector)) {
     const api = await KubeApi.factory(log, ctx, provider)
-    const namespace = await getAppNamespace(ctx, log, provider)
+    const k8sCtx = ctx as KubernetesPluginContext
+    const namespace = await getModuleNamespace({
+      ctx: k8sCtx,
+      log,
+      module,
+      provider: k8sCtx.provider,
+    })
 
     const pods = await getReadyPods(api, namespace, resourceSpec.podSelector)
     const pod = sample(pods)
@@ -580,7 +613,7 @@ export async function getServiceResource({
   }
 
   let targetName = resourceSpec.name
-  let target: HotReloadableResource
+  let target: SyncableResource
 
   const targetKind = resourceSpec.kind
   const chartResourceNames = manifests.map((o) => `${o.kind}/${o.metadata.name}`)
@@ -594,7 +627,7 @@ export async function getServiceResource({
       targetName = await renderHelmTemplateString(ctx, log, module as HelmModule, chartPath, targetName)
     }
 
-    target = find(<HotReloadableResource[]>manifests, (o) => o.kind === targetKind && o.metadata.name === targetName)!
+    target = find(<SyncableResource[]>manifests, (o) => o.kind === targetKind && o.metadata.name === targetName)!
 
     if (!target) {
       throw new ConfigurationError(
@@ -624,7 +657,7 @@ export async function getServiceResource({
       )
     }
 
-    target = <HotReloadableResource>applicableChartResources[0]
+    target = <SyncableResource>applicableChartResources[0]
   }
 
   return target
@@ -634,7 +667,7 @@ export async function getServiceResource({
  * From the given Deployment, DaemonSet, StatefulSet or Pod resource, get either the first container spec,
  * or if `containerName` is specified, the one matching that name.
  */
-export function getResourceContainer(resource: HotReloadableResource, containerName?: string): V1Container {
+export function getResourceContainer(resource: SyncableResource, containerName?: string): V1Container {
   const kind = resource.kind
   const name = resource.metadata.name
 
@@ -717,4 +750,11 @@ export function getK8sProvider(providers: ProviderMap): KubernetesProvider {
   }
 
   return provider as KubernetesProvider
+}
+
+/**
+ * Returns true if the in-cluster registry is being used by the given `kubernetes` provider.
+ */
+export function usingInClusterRegistry(provider: KubernetesProvider) {
+  return provider.config.deploymentRegistry?.hostname === inClusterRegistryHostname
 }

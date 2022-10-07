@@ -1,25 +1,27 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+import dotenv = require("dotenv")
 import { sep, resolve, relative, basename, dirname, join } from "path"
-import yaml from "js-yaml"
+import { safeLoad, safeLoadAll } from "js-yaml"
 import yamlLint from "yaml-lint"
-import { readFile } from "fs-extra"
+import { pathExists, readFile } from "fs-extra"
 import { omit, isPlainObject, isArray } from "lodash"
 import { ModuleResource, coreModuleSpecSchema, baseModuleSchemaKeys, BuildDependencyConfig } from "./module"
-import { ConfigurationError, FilesystemError } from "../exceptions"
+import { ConfigurationError, FilesystemError, ParameterError } from "../exceptions"
 import { DEFAULT_API_VERSION } from "../constants"
 import { ProjectResource } from "../config/project"
 import { validateWithPath } from "./validation"
-import { WorkflowResource } from "./workflow"
 import { listDirectory } from "../util/fs"
 import { isConfigFilename } from "../util/fs"
-import { TemplateKind, templateKind, ModuleTemplateResource } from "./module-template"
+import { TemplateKind, templateKind } from "./module-template"
+import { isTruthy } from "../util/util"
+import { PrimitiveMap } from "./common"
 
 export interface GardenResource {
   apiVersion: string
@@ -40,7 +42,7 @@ export type ConfigKind = "Module" | "Workflow" | "Project" | TemplateKind
  */
 export async function loadAndValidateYaml(content: string, path: string): Promise<any[]> {
   try {
-    return yaml.safeLoadAll(content) || []
+    return safeLoadAll(content) || []
   } catch (err) {
     // We try to find the error using a YAML linter
     try {
@@ -105,14 +107,17 @@ function prepareResource({
   const kind = spec.kind
   const relPath = relative(projectRoot, configPath)
 
-  if (kind === "Project") {
-    return prepareProjectConfig(spec, configPath)
+  if (!spec.apiVersion) {
+    spec.apiVersion = DEFAULT_API_VERSION
+  }
+
+  spec.path = dirname(configPath)
+  spec.configPath = configPath
+
+  if (kind === "Project" || kind === "Command" || kind === "Workflow" || kind === templateKind) {
+    return spec
   } else if (kind === "Module") {
     return prepareModuleResource(spec, configPath, projectRoot)
-  } else if (kind === "Workflow") {
-    return prepareWorkflowResource(spec, configPath)
-  } else if (kind === templateKind) {
-    return prepareTemplateResource(spec, configPath)
   } else if (allowInvalid) {
     return spec
   } else if (!kind) {
@@ -128,29 +133,18 @@ function prepareResource({
   }
 }
 
-function prepareProjectConfig(spec: any, configPath: string): ProjectResource {
-  if (!spec.apiVersion) {
-    spec.apiVersion = DEFAULT_API_VERSION
-  }
-
-  spec.kind = "Project"
-  spec.path = dirname(configPath)
-  spec.configPath = configPath
-
-  return spec
-}
-
 export function prepareModuleResource(spec: any, configPath: string, projectRoot: string): ModuleResource {
-  /**
-   * We allow specifying modules by name only as a shorthand:
-   *   dependencies:
-   *   - foo-module
-   *   - name: foo-module // same as the above
-   */
+  // We allow specifying modules by name only as a shorthand:
+  //   dependencies:
+  //   - foo-module
+  //   - name: foo-module // same as the above
+  // Empty strings and nulls are omitted from the array.
   let dependencies: BuildDependencyConfig[] = spec.build?.dependencies || []
 
   if (spec.build && spec.build.dependencies && isArray(spec.build.dependencies)) {
-    dependencies = spec.build.dependencies.map((dep: any) => (typeof dep === "string" ? { name: dep, copy: [] } : dep))
+    // We call `prepareBuildDependencies` on `spec.build.dependencies` again in `resolveModuleConfig` to ensure that
+    // any dependency configs whose module names resolved to null get filtered out.
+    dependencies = prepareBuildDependencies(spec.build.dependencies)
   }
 
   const cleanedSpec = {
@@ -187,6 +181,7 @@ export function prepareModuleResource(spec: any, configPath: string, projectRoot
     type: spec.type,
     taskConfigs: [],
     variables: spec.variables,
+    varfile: spec.varfile,
   }
 
   validateWithPath({
@@ -201,28 +196,22 @@ export function prepareModuleResource(spec: any, configPath: string, projectRoot
   return config
 }
 
-export function prepareWorkflowResource(spec: any, configPath: string): WorkflowResource {
-  if (!spec.apiVersion) {
-    spec.apiVersion = DEFAULT_API_VERSION
-  }
-
-  spec.kind = "Workflow"
-  spec.path = dirname(configPath)
-  spec.configPath = configPath
-
-  return spec
-}
-
-export function prepareTemplateResource(spec: any, configPath: string): ModuleTemplateResource {
-  if (!spec.apiVersion) {
-    spec.apiVersion = DEFAULT_API_VERSION
-  }
-
-  spec.kind = templateKind
-  spec.path = dirname(configPath)
-  spec.configPath = configPath
-
-  return spec
+/**
+ * Normalizes build dependencies such that the string / module name shorthand is converted into the map form,
+ * and removes any null entries (or entries with null names, which can appear after template resolution).
+ */
+export function prepareBuildDependencies(buildDependencies: any[]): BuildDependencyConfig[] {
+  return buildDependencies
+    .map((dep) => {
+      if (!dep || (dep && dep.name === null)) {
+        return null
+      }
+      return {
+        name: dep.name ? dep.name : dep,
+        copy: dep.copy ? dep.copy : [],
+      }
+    })
+    .filter(isTruthy)
 }
 
 export async function findProjectConfig(path: string, allowInvalid = false): Promise<ProjectResource | undefined> {
@@ -249,4 +238,65 @@ export async function findProjectConfig(path: string, allowInvalid = false): Pro
   }
 
   return
+}
+
+export async function loadVarfile({
+  configRoot,
+  path,
+  defaultPath,
+}: {
+  // project root (when resolving project config) or module root (when resolving module config)
+  configRoot: string
+  path: string | undefined
+  defaultPath: string | undefined
+}): Promise<PrimitiveMap> {
+  if (!path && !defaultPath) {
+    throw new ParameterError(`Neither a path nor a defaultPath was provided.`, { configRoot, path, defaultPath })
+  }
+  const resolvedPath = resolve(configRoot, <string>(path || defaultPath))
+  const exists = await pathExists(resolvedPath)
+
+  if (!exists && path && path !== defaultPath) {
+    throw new ConfigurationError(`Could not find varfile at path '${path}'`, {
+      path,
+      resolvedPath,
+    })
+  }
+
+  if (!exists) {
+    return {}
+  }
+
+  try {
+    const data = await readFile(resolvedPath)
+    const relPath = relative(configRoot, resolvedPath)
+    const filename = basename(resolvedPath.toLowerCase())
+
+    if (filename.endsWith(".json")) {
+      const parsed = JSON.parse(data.toString())
+      if (!isPlainObject(parsed)) {
+        throw new ConfigurationError(`Configured variable file ${relPath} must be a valid plain JSON object`, {
+          parsed,
+        })
+      }
+      return parsed
+    } else if (filename.endsWith(".yml") || filename.endsWith(".yaml")) {
+      const parsed = safeLoad(data.toString())
+      if (!isPlainObject(parsed)) {
+        throw new ConfigurationError(`Configured variable file ${relPath} must be a single plain YAML mapping`, {
+          parsed,
+        })
+      }
+      return parsed as PrimitiveMap
+    } else {
+      // Note: For backwards-compatibility we fall back on using .env as a default format, and don't specifically
+      // validate the extension for that.
+      return dotenv.parse(await readFile(resolvedPath))
+    }
+  } catch (error) {
+    throw new ConfigurationError(`Unable to load varfile at '${path}': ${error}`, {
+      error,
+      path,
+    })
+  }
 }

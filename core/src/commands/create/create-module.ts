@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,7 +9,6 @@
 import chalk from "chalk"
 import dedent from "dedent"
 import { pathExists } from "fs-extra"
-import inquirer from "inquirer"
 import { Command, CommandResult, CommandParams } from "../base"
 import { printHeader } from "../../logger/util"
 import { isDirectory, defaultConfigFilename } from "../../util/fs"
@@ -17,7 +16,7 @@ import { loadConfigResources, findProjectConfig } from "../../config/base"
 import { resolve, basename, relative, join } from "path"
 import { GardenBaseError, ParameterError } from "../../exceptions"
 import { getModuleTypes, getPluginBaseNames } from "../../plugins"
-import { addConfig } from "./helpers"
+import { addConfig, createBaseOpts } from "./helpers"
 import { getSupportedPlugins } from "../../plugins/plugins"
 import { baseModuleSpecSchema } from "../../config/module"
 import { renderConfigReference } from "../../docs/config"
@@ -32,9 +31,11 @@ import { ModuleTypeMap } from "../../types/plugin/plugin"
 import { LogEntry } from "../../logger/log-entry"
 import { getProviderUrl, getModuleTypeUrl } from "../../docs/common"
 import { PathParameter, StringParameter, BooleanParameter, StringOption } from "../../cli/params"
+import { userPrompt } from "../../util/util"
 
 const createModuleArgs = {}
 const createModuleOpts = {
+  ...createBaseOpts,
   dir: new PathParameter({
     help: "Directory to place the module in (defaults to current directory).",
     defaultValue: ".",
@@ -99,6 +100,11 @@ export class CreateModuleCommand extends Command<CreateModuleArgs, CreateModuleO
     printHeader(headerLog, "Create new module", "pencil2")
   }
 
+  // Defining it like this because it'll stall on waiting for user input.
+  isPersistent() {
+    return true
+  }
+
   async action({
     opts,
     log,
@@ -119,7 +125,7 @@ export class CreateModuleCommand extends Command<CreateModuleArgs, CreateModuleO
       type,
     }
 
-    const allModuleTypes = getModuleTypes(getSupportedPlugins().map((p) => p()))
+    const allModuleTypes = getModuleTypes(getSupportedPlugins().map((p) => p.callback()))
 
     if (opts.interactive && (!opts.name || !opts.type)) {
       log.root.stop()
@@ -127,7 +133,7 @@ export class CreateModuleCommand extends Command<CreateModuleArgs, CreateModuleO
       if (!opts.type) {
         const choices = await getModuleTypeSuggestions(log, allModuleTypes, configDir, name)
 
-        const answer = await inquirer.prompt({
+        const answer = await userPrompt({
           name: "suggestion",
           message: "Select a module type:",
           type: "list",
@@ -139,7 +145,7 @@ export class CreateModuleCommand extends Command<CreateModuleArgs, CreateModuleO
       }
 
       if (!opts.name) {
-        const answer = await inquirer.prompt({
+        const answer = await userPrompt({
           name: "name",
           message: "Set the module name:",
           type: "input",
@@ -192,9 +198,9 @@ export class CreateModuleCommand extends Command<CreateModuleArgs, CreateModuleO
 
     const { yaml } = renderConfigReference(schema, {
       yamlOpts: {
-        commentOutEmpty: true,
+        onEmptyValue: opts["skip-comments"] ? "remove" : "comment out",
         filterMarkdown: true,
-        renderBasicDescription: true,
+        renderBasicDescription: !opts["skip-comments"],
         renderFullDescription: false,
         renderValue: "preferExample",
         presetValues,
@@ -292,10 +298,13 @@ export async function getModuleTypeSuggestions(
     })
   )
 
-  let choices: inquirer.ChoiceCollection = Object.keys(moduleTypes).map((moduleType) => ({
+  let choices = Object.keys(moduleTypes).map((moduleType) => ({
     name: moduleType,
     value: { kind: "Module", type: moduleType, name: defaultName },
   }))
+
+  // Note: requiring inquirer inline because it's slow to import
+  const inquirer = require("inquirer")
 
   if (allSuggestions.length > 0) {
     return [

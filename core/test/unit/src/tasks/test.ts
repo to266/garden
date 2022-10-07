@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,7 +8,7 @@
 
 import { expect } from "chai"
 import { resolve } from "path"
-import { TestTask, getTestTasks } from "../../../../src/tasks/test"
+import { TestTask } from "../../../../src/tasks/test"
 import { dataDir, makeTestGarden, TestGarden } from "../../../helpers"
 import { LogEntry } from "../../../../src/logger/log-entry"
 import { ConfigGraph } from "../../../../src/config-graph"
@@ -25,6 +25,30 @@ describe("TestTask", () => {
     log = garden.log
   })
 
+  describe("process", () => {
+    it("should correctly resolve runtime outputs from tasks", async () => {
+      const moduleA = graph.getModule("module-a")
+      const testConfig = moduleA.testConfigs[0]
+
+      const testTask = new TestTask({
+        garden,
+        log,
+        graph,
+        test: testFromConfig(moduleA, testConfig, graph),
+        force: true,
+        forceBuild: false,
+        devModeServiceNames: [],
+        hotReloadServiceNames: [],
+        localModeServiceNames: [],
+      })
+
+      const key = testTask.getKey()
+      const { [key]: result } = await garden.processTasks([testTask], { throwOnError: true })
+
+      expect(result!.output.log).to.eql("echo task-a-ok")
+    })
+  })
+
   describe("getDependencies", () => {
     it("should include task dependencies", async () => {
       const moduleA = graph.getModule("module-a")
@@ -39,32 +63,35 @@ describe("TestTask", () => {
         forceBuild: false,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       const deps = await task.resolveDependencies()
 
       expect(deps.map((d) => d.getKey())).to.eql(["build.module-a", "deploy.service-b", "task.task-a"])
     })
-  })
 
-  describe("getTestTasks", () => {
-    it("should not return test tasks with deploy dependencies on services deployed with hot reloading", async () => {
-      const moduleA = graph.getModule("module-a")
+    context("when skipRuntimeDependencies = true", () => {
+      it("doesn't return deploy or task dependencies", async () => {
+        const moduleA = graph.getModule("module-a")
+        const testConfig = moduleA.testConfigs[0]
 
-      const tasks = await getTestTasks({
-        garden,
-        log,
-        graph,
-        module: moduleA,
-        devModeServiceNames: [],
-        hotReloadServiceNames: ["service-b"],
+        const task = new TestTask({
+          garden,
+          log,
+          graph,
+          test: testFromConfig(moduleA, testConfig, graph),
+          force: true,
+          forceBuild: false,
+          skipRuntimeDependencies: true, // <-----
+          devModeServiceNames: [],
+          hotReloadServiceNames: [],
+          localModeServiceNames: [],
+        })
+
+        const deps = await task.resolveDependencies()
+        expect(deps.find((dep) => dep.type === "deploy" || dep.type === "task")).to.be.undefined
       })
-
-      const testTask = tasks[0]
-      const deps = await testTask.resolveDependencies()
-
-      expect(tasks.length).to.eql(1)
-      expect(deps.map((d) => d.getKey())).to.eql(["build.module-a", "task.task-a"])
     })
   })
 })

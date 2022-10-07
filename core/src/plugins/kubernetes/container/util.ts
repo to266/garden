@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,7 +14,7 @@ import { KubernetesPluginContext } from "../config"
 import { getSystemNamespace } from "../namespace"
 import { got, GotTextOptions } from "../../../util/http"
 import { ContainerResourcesSpec, ServiceLimitSpec } from "../../container/config"
-import { V1ResourceRequirements } from "@kubernetes/client-node"
+import { V1ResourceRequirements, V1SecurityContext } from "@kubernetes/client-node"
 import { kilobytesToString, millicpuToString } from "../util"
 
 export async function queryRegistry(ctx: KubernetesPluginContext, log: LogEntry, path: string, opts?: GotTextOptions) {
@@ -53,4 +53,25 @@ export function getResourceRequirements(
       memory: kilobytesToString(maxMemory * 1024),
     },
   }
+}
+
+export function getSecurityContext(
+  privileged: boolean | undefined,
+  addCapabilities: string[] | undefined,
+  dropCapabilities: string[] | undefined
+): V1SecurityContext | null {
+  if (!privileged && !addCapabilities && !dropCapabilities) {
+    return null
+  }
+  const ctx: V1SecurityContext = {}
+  if (privileged) {
+    ctx.privileged = privileged
+  }
+  if (addCapabilities) {
+    ctx.capabilities = { add: addCapabilities }
+  }
+  if (dropCapabilities) {
+    ctx.capabilities = { ...(ctx.capabilities || {}), drop: dropCapabilities }
+  }
+  return ctx
 }

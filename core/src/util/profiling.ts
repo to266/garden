@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -13,7 +13,7 @@ import { renderTable, tablePresets } from "./string"
 import chalk from "chalk"
 import { isPromise } from "./util"
 
-const maxReportRows = 30
+const maxReportRows = 60
 
 // Just storing the invocation duration for now
 type Invocation = number
@@ -58,18 +58,27 @@ export class Profiler {
 
     const keys = Object.keys(this.data)
 
-    const heading = ["Function/method", "# Invocations", "Total time", "Avg. time"].map((h) => chalk.white.underline(h))
+    const heading = ["Function/method", "# Invocations", "Total ms", "Avg. ms", "First ms"].map((h) =>
+      chalk.white.underline(h)
+    )
     const tableData = sortBy(
       keys.map((key) => {
         const invocations = this.data[key].length
         const total = sum(this.data[key])
         const average = total / invocations
-        return [formatKey(key), invocations, total, average]
+        const first = this.data[key][0]
+        return [formatKey(key), invocations, total, average, first]
       }),
       // Sort by total duration
       (row) => -row[2]
     )
-      .map((row) => [row[0], row[1], formatDuration(<number>row[2]), formatDuration(<number>row[3])])
+      .map((row) => [
+        row[0],
+        row[1],
+        formatDuration(<number>row[2]),
+        formatDuration(<number>row[3]),
+        formatDuration(<number>row[4]),
+      ])
       .slice(0, maxReportRows)
 
     const totalRows = keys.length
@@ -93,6 +102,10 @@ ${table}
   }
 
   log(key: string, start: number) {
+    if (!this.enabled) {
+      return
+    }
+
     const duration = performance.now() - start
     if (this.data[key]) {
       this.data[key].push(duration)
@@ -126,11 +139,11 @@ export function Profile(profiler?: Profiler) {
       }
 
       const descriptor = Object.getOwnPropertyDescriptor(target.prototype, propertyName)!
-      const originalMethod = descriptor.value
+      const originalMethod = descriptor.get || descriptor.value
 
       const timingKey = `${target.name}#${propertyName}`
 
-      descriptor.value = function (...args: any[]) {
+      const wrapped = function (this: any, ...args: any[]) {
         const start = performance.now()
         // tslint:disable-next-line: no-invalid-this
         const result = originalMethod.apply(this, args)
@@ -151,6 +164,12 @@ export function Profile(profiler?: Profiler) {
           profiler!.log(timingKey, start)
           return result
         }
+      }
+
+      if (descriptor.get) {
+        descriptor.get = wrapped
+      } else {
+        descriptor.value = wrapped
       }
 
       Object.defineProperty(target.prototype, propertyName, descriptor)

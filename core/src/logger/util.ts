@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -11,9 +11,9 @@ import chalk, { Chalk } from "chalk"
 import CircularJSON from "circular-json"
 import { LogLevel } from "./logger"
 import { Logger } from "./logger"
-import { LogEntry, LogEntryParams, EmojiName } from "./log-entry"
+import { LogEntry, LogEntryParams, EmojiName, LogEntryMessage } from "./log-entry"
 import { deepMap, deepFilter, safeDumpYaml } from "../util/util"
-import { padEnd, isEmpty } from "lodash"
+import { padEnd, isEmpty, isPlainObject } from "lodash"
 import { dedent } from "../util/string"
 import hasAnsi from "has-ansi"
 import { GardenError } from "../exceptions"
@@ -61,6 +61,21 @@ export function getChildEntries(node: Logger | LogEntry): LogEntry[] {
 
 export function findParentEntry(entry: LogEntry, predicate: ProcessNode<LogEntry>): LogEntry | null {
   return predicate(entry) ? entry : entry.parent ? findParentEntry(entry.parent, predicate) : null
+}
+
+export function getAllSections(entry: LogEntry, msg: LogEntryMessage) {
+  const sections: string[] = []
+  let parent = entry.parent
+
+  while (parent) {
+    const s = parent.getLatestMessage().section
+    s && sections.push(s)
+    parent = parent.parent
+  }
+
+  msg.section && sections.push(msg.section)
+
+  return sections
 }
 
 export function findLogEntry(node: Logger | LogEntry, predicate: ProcessNode<LogEntry>): LogEntry | void {
@@ -230,17 +245,29 @@ export function renderMessageWithDivider(prefix: string, msg: string, isError: b
   `
 }
 
-export function formatGardenError(error: GardenError) {
-  const { detail, message } = error
-  let out = message || ""
-
-  // We recursively filter out internal fields (i.e. having names starting with _).
-  const filteredDetail = deepFilter(sanitizeObject(detail), (_val, key: string | number) => {
+// Recursively filters out internal fields, including keys starting with _ and some specific fields found on Modules.
+export function withoutInternalFields(object: any): any {
+  return deepFilter(sanitizeObject(object), (_val, key: string | number) => {
     if (typeof key === "string") {
-      return !key.startsWith("_")
+      return (
+        !key.startsWith("_") &&
+        // FIXME: this a little hacky and should be removable in 0.14 at the latest.
+        // The buildDependencies map on Module objects explodes outputs, as well as the dependencyVersions field on
+        // version objects.
+        key !== "dependencyVersions" &&
+        key !== "buildDependencies"
+      )
     }
     return true
   })
+}
+
+export function formatGardenErrorWithDetail(error: GardenError) {
+  const { detail, message, stack } = error
+  let out = stack || message || ""
+
+  // We recursively filter out internal fields (i.e. having names starting with _).
+  const filteredDetail = withoutInternalFields(detail)
 
   if (!isEmpty(filteredDetail)) {
     try {
@@ -260,5 +287,11 @@ export function sanitizeObject(obj: any) {
   obj = deepMap(obj, (value: any) => {
     return Buffer.isBuffer(value) ? "<Buffer>" : value
   })
-  return JSON.parse(CircularJSON.stringify(obj))
+
+  const cleanedJson = isPlainObject(obj)
+    ? CircularJSON.stringify(obj)
+    : // Handle classes, e.g. Error objects
+      CircularJSON.stringify(obj, Object.getOwnPropertyNames(obj))
+
+  return JSON.parse(cleanedJson)
 }

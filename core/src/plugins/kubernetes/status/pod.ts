@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -117,21 +117,27 @@ export async function getPodLogs({
         timestamps
       )
     } catch (err) {
-      if (err.statusCode === 404) {
+      const terminated = err.statusCode === 400 && err.detail?.body?.message?.endsWith("is terminated")
+
+      if (terminated || err.statusCode === 404) {
         // Couldn't find pod/container, try requesting a previously terminated one
-        log = await api.core.readNamespacedPodLog(
-          pod.metadata!.name!,
-          namespace,
-          containerName,
-          follow,
-          insecureSkipTLSVerify,
-          byteLimit,
-          pretty,
-          true, // previous
-          sinceSeconds,
-          lineLimit,
-          timestamps
-        )
+        try {
+          log = await api.core.readNamespacedPodLog(
+            pod.metadata!.name!,
+            namespace,
+            containerName,
+            follow,
+            insecureSkipTLSVerify,
+            byteLimit,
+            pretty,
+            true, // previous
+            sinceSeconds,
+            lineLimit,
+            timestamps
+          )
+        } catch (err) {
+          log = ""
+        }
       } else if (err instanceof KubernetesError && err.message.includes("waiting to start")) {
         log = ""
       } else {

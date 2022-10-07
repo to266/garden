@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -17,8 +17,8 @@ import { Garden } from "./garden"
 import { registerCleanupFunction, sleep } from "./util/util"
 import { LogEntry } from "./logger/log-entry"
 import { GetPortForwardResult } from "./types/plugin/service/getPortForward"
-import { LocalAddress } from "./db/entities/local-address"
 import { ConfigGraph } from "./config-graph"
+import { gardenEnv } from "./constants"
 
 interface PortProxy {
   key: string
@@ -29,13 +29,15 @@ interface PortProxy {
   spec: ForwardablePort
 }
 
-const defaultLocalIp = "127.0.0.1"
+const defaultLocalAddress = "localhost"
 
 const activeProxies: { [key: string]: PortProxy } = {}
 
 registerCleanupFunction("kill-service-port-proxies", () => {
   for (const proxy of Object.values(activeProxies)) {
     try {
+      // Avoid EPIPE errors
+      proxy.server.on("error", () => {})
       stopPortProxy(proxy)
     } catch {}
   }
@@ -96,6 +98,8 @@ async function createProxy({ garden, graph, log, service, spec }: StartPortProxy
   const key = getPortKey(service, spec)
   let fwd: GetPortForwardResult | null = null
 
+  let lastPrintedError = ""
+
   const getPortForward = async () => {
     if (fwd) {
       return fwd
@@ -110,7 +114,14 @@ async function createProxy({ garden, graph, log, service, spec }: StartPortProxy
       try {
         fwd = await actions.getPortForward({ service, log, graph, ...spec })
       } catch (err) {
-        log.error(`Error starting port forward to ${key}: ${err.message}`)
+        const msg = err.message.trim()
+
+        if (msg !== lastPrintedError) {
+          log.warn(chalk.gray(`→ Could not start port forward to ${key} (will retry): ${msg}`))
+          lastPrintedError = msg
+        } else {
+          log.silly(chalk.gray(`→ Could not start port forward to ${key} (will retry): ${msg}`))
+        }
       }
 
       log.debug(`Successfully started port forward to ${key}`)
@@ -214,12 +225,17 @@ async function createProxy({ garden, graph, log, service, spec }: StartPortProxy
     })
   }
 
-  let localIp = defaultLocalIp
+  let localIp = defaultLocalAddress
   let localPort: number | undefined
   const preferredLocalPort = spec.preferredLocalPort || spec.targetPort
 
-  if (!spec.preferredLocalPort) {
+  if (gardenEnv.GARDEN_PROXY_DEFAULT_ADDRESS) {
+    localIp = gardenEnv.GARDEN_PROXY_DEFAULT_ADDRESS
+  } else if (!spec.preferredLocalPort) {
+    // TODO: drop this in 0.13, it causes more issues than it solves
     // Only try a non-default IP if a preferred port isn't set
+    // Note: lazy-loading for startup performance
+    const { LocalAddress } = require("./db/entities/local-address")
     const preferredLocalAddress = await LocalAddress.resolve({
       projectName: garden.projectName,
       moduleName: service.module.name,
@@ -234,10 +250,10 @@ async function createProxy({ garden, graph, log, service, spec }: StartPortProxy
     try {
       localPort = await getPort({ host: localIp, port: preferredLocalPort })
     } catch (err) {
-      if (err.errno === "EADDRNOTAVAIL") {
+      if (err.code === "EADDRNOTAVAIL") {
         // If we're not allowed to bind to other 127.x.x.x addresses, we fall back to localhost. This will almost always
         // be the case on Mac, until we come up with something more clever (that doesn't require sudo).
-        localIp = defaultLocalIp
+        localIp = defaultLocalAddress
         localPort = await getPort({ host: localIp, port: preferredLocalPort })
       } else {
         throw err
@@ -268,7 +284,7 @@ async function createProxy({ garden, graph, log, service, spec }: StartPortProxy
     })
 
     if (started) {
-      if (spec.preferredLocalPort && (localIp !== defaultLocalIp || localPort !== spec.preferredLocalPort)) {
+      if (spec.preferredLocalPort && (localIp !== defaultLocalAddress || localPort !== spec.preferredLocalPort)) {
         log.warn(
           chalk.yellow(`→ Unable to bind port forward ${key} to preferred local port ${spec.preferredLocalPort}`)
         )
@@ -277,7 +293,7 @@ async function createProxy({ garden, graph, log, service, spec }: StartPortProxy
       return { key, server, service, spec, localPort, localUrl }
     } else {
       // Need to retry on different port
-      localIp = "127.0.0.1"
+      localIp = defaultLocalAddress
       localPort = undefined
       await sleep(500)
     }
@@ -290,7 +306,7 @@ function stopPortProxy(proxy: PortProxy, log?: LogEntry) {
   delete activeProxies[proxy.key]
 
   try {
-    proxy.server.close()
+    proxy.server.close(() => {})
   } catch {}
 }
 

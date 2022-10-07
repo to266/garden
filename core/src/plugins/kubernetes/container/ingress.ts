@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -22,9 +22,7 @@ import { LogEntry } from "../../../logger/log-entry"
 import chalk from "chalk"
 
 // Ingress API versions in descending order of preference
-// NOTE: We currently prefer the v1beta1 API version if available, since users may not have an IngressClass set up
-// correctly
-export const supportedIngressApiVersions = ["networking.k8s.io/v1beta1", "networking.k8s.io/v1", "extensions/v1beta1"]
+export const supportedIngressApiVersions = ["networking.k8s.io/v1", "networking.k8s.io/v1beta1", "extensions/v1beta1"]
 
 interface ServiceIngressWithCert extends ServiceIngress {
   spec: ContainerIngressSpec
@@ -32,6 +30,24 @@ interface ServiceIngressWithCert extends ServiceIngress {
 }
 
 const certificateHostnames: { [name: string]: string[] } = {}
+
+/**
+ * Detects and returns the supported ingress version for the context (checking for api versions in the provided
+ * preference order).
+ */
+export async function getIngressApiVersion(
+  log: LogEntry,
+  api: KubeApi,
+  preferenceOrder: string[]
+): Promise<string | undefined> {
+  for (const version of preferenceOrder) {
+    const resourceInfo = await api.getApiResourceInfo(log, version, "Ingress")
+    if (resourceInfo) {
+      return version
+    }
+  }
+  return undefined
+}
 
 export async function createIngressResources(
   api: KubeApi,
@@ -45,14 +61,7 @@ export async function createIngressResources(
   }
 
   // Detect the supported ingress version for the context
-  let apiVersion: string | undefined = undefined
-
-  for (const version of supportedIngressApiVersions) {
-    const resourceInfo = await api.getApiResourceInfo(log, version, "Ingress")
-    if (resourceInfo) {
-      apiVersion = version
-    }
-  }
+  const apiVersion = await getIngressApiVersion(log, api, supportedIngressApiVersions)
 
   if (!apiVersion) {
     log.warn(chalk.yellow(`Could not find a supported Ingress API version in the target cluster`))
@@ -71,7 +80,6 @@ export async function createIngressResources(
 
     if (apiVersion === "networking.k8s.io/v1") {
       // The V1 API has a different shape than the beta API
-      // Note: We do not create the IngressClass resource automatically here!
       const ingressResource: KubernetesResource<V1Ingress> = {
         apiVersion,
         kind: "Ingress",
@@ -92,7 +100,7 @@ export async function createIngressResources(
                 paths: [
                   {
                     path: ingress.path,
-                    pathType: "prefix",
+                    pathType: "Prefix",
                     backend: {
                       service: {
                         name: service.name,

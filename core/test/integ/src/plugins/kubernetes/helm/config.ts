@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -10,10 +10,10 @@ import { resolve } from "path"
 import { expect } from "chai"
 import { cloneDeep, omit } from "lodash"
 
-import { TestGarden, expectError } from "../../../../../helpers"
+import { expectError, TestGarden } from "../../../../../helpers"
 import { PluginContext } from "../../../../../../src/plugin-context"
 import { dedent } from "../../../../../../src/util/string"
-import { ModuleConfig } from "../../../../../../src/config/module"
+import { defaultBuildTimeout, ModuleConfig } from "../../../../../../src/config/module"
 import { apply } from "json-merge-patch"
 import { getHelmTestGarden } from "./common"
 import { defaultHelmTimeout } from "../../../../../../src/plugins/kubernetes/helm/config"
@@ -51,6 +51,7 @@ describe("configureHelmModule", () => {
       atomicInstall: true,
       build: {
         dependencies: [],
+        timeout: defaultBuildTimeout,
       },
       chartPath: ".",
       devMode: {
@@ -91,6 +92,7 @@ describe("configureHelmModule", () => {
       allowPublish: true,
       build: {
         dependencies: [],
+        timeout: defaultBuildTimeout,
       },
       configPath: resolve(ctx.projectRoot, "api", "garden.yml"),
       description: "The API backend for the voting UI",
@@ -117,7 +119,8 @@ describe("configureHelmModule", () => {
       testConfigs: [],
       type: "helm",
       taskConfigs: [],
-      variables: undefined,
+      variables: {},
+      varfile: undefined,
     })
   })
 

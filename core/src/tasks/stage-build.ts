@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -31,9 +31,9 @@ export class StageBuildTask extends BaseTask {
   type: TaskType = "stage-build"
   concurrencyLimit = 10
 
-  private graph: ConfigGraph
-  private module: GardenModule
-  private extraDependencies: BaseTask[]
+  graph: ConfigGraph
+  module: GardenModule
+  extraDependencies: BaseTask[]
 
   constructor({ garden, graph, log, module, force, dependencies }: StageBuildTaskParams) {
     super({ garden, log, force, version: module.version.versionString })

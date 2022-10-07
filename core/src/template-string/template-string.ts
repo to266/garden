@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -13,12 +13,22 @@ import {
   ScanContext,
   ContextResolveOutput,
   ContextKeySegment,
+  GenericContext,
 } from "../config/template-contexts/base"
-import { difference, uniq, isPlainObject, isNumber } from "lodash"
-import { Primitive, StringMap, isPrimitive, objectSpreadKey } from "../config/common"
+import { difference, uniq, isPlainObject, isNumber, cloneDeep } from "lodash"
+import {
+  Primitive,
+  StringMap,
+  isPrimitive,
+  objectSpreadKey,
+  arrayConcatKey,
+  arrayForEachKey,
+  arrayForEachReturnKey,
+  arrayForEachFilterKey,
+} from "../config/common"
 import { profile } from "../util/profiling"
-import { dedent, deline, truncate } from "../util/string"
-import { ObjectWithName } from "../util/util"
+import { dedent, deline, naturalList, truncate } from "../util/string"
+import { deepMap, ObjectWithName } from "../util/util"
 import { LogEntry } from "../logger/log-entry"
 import { ModuleConfigContext } from "../config/template-contexts/module"
 import { callHelperFunction } from "./functions"
@@ -72,7 +82,8 @@ function getValue(v: Primitive | undefined | ResolvedClause) {
  * dependencies when resolving context variables.
  */
 export function resolveTemplateString(string: string, context: ConfigContext, opts: ContextResolveOpts = {}): any {
-  if (!string) {
+  // Just return immediately if this is definitely not a template string
+  if (!maybeTemplateString(string)) {
     return string
   }
 
@@ -203,22 +214,34 @@ export const resolveTemplateStrings = profile(function $resolveTemplateStrings<T
   if (typeof value === "string") {
     return <T>resolveTemplateString(value, context, opts)
   } else if (Array.isArray(value)) {
-    return <T>(<unknown>value.map((v) => resolveTemplateStrings(v, context, opts)))
-  } else if (isPlainObject(value)) {
-    // Resolve $merge keys, depth-first, leaves-first
-    let output = {}
+    const output: unknown[] = []
 
-    for (const [k, v] of Object.entries(value)) {
-      const resolved = resolveTemplateStrings(v, context, opts)
+    for (const v of value) {
+      if (isPlainObject(v) && v[arrayConcatKey] !== undefined) {
+        if (Object.keys(v).length > 1) {
+          const extraKeys = naturalList(
+            Object.keys(v)
+              .filter((k) => k !== arrayConcatKey)
+              .map((k) => JSON.stringify(k))
+          )
+          throw new ConfigurationError(
+            `A list item with a ${arrayConcatKey} key cannot have any other keys (found ${extraKeys})`,
+            {
+              value: v,
+            }
+          )
+        }
 
-      if (k === objectSpreadKey) {
-        if (isPlainObject(resolved)) {
-          output = { ...output, ...resolved }
+        // Handle array concatenation via $concat
+        const resolved = resolveTemplateStrings(v[arrayConcatKey], context, opts)
+
+        if (Array.isArray(resolved)) {
+          output.push(...resolved)
         } else if (opts.allowPartial) {
-          output[k] = resolved
+          output.push({ $concat: resolved })
         } else {
           throw new ConfigurationError(
-            `Value of ${objectSpreadKey} key must be (or resolve to) a mapping object (got ${typeof resolved})`,
+            `Value of ${arrayConcatKey} key must be (or resolve to) an array (got ${typeof resolved})`,
             {
               value,
               resolved,
@@ -226,15 +249,155 @@ export const resolveTemplateStrings = profile(function $resolveTemplateStrings<T
           )
         }
       } else {
-        output[k] = resolved
+        output.push(resolveTemplateStrings(v, context, opts))
       }
     }
 
-    return <T>output
+    return <T>(<unknown>output)
+  } else if (isPlainObject(value)) {
+    if (value[arrayForEachKey] !== undefined) {
+      // Handle $forEach loop
+      return handleForEachObject(value, context, opts)
+    } else {
+      // Resolve $merge keys, depth-first, leaves-first
+      let output = {}
+
+      for (const [k, v] of Object.entries(value)) {
+        const resolved = resolveTemplateStrings(v, context, opts)
+
+        if (k === objectSpreadKey) {
+          if (isPlainObject(resolved)) {
+            output = { ...output, ...resolved }
+          } else if (opts.allowPartial) {
+            output[k] = resolved
+          } else {
+            throw new ConfigurationError(
+              `Value of ${objectSpreadKey} key must be (or resolve to) a mapping object (got ${typeof resolved})`,
+              {
+                value,
+                resolved,
+              }
+            )
+          }
+        } else {
+          output[k] = resolved
+        }
+      }
+
+      return <T>output
+    }
   } else {
     return <T>value
   }
 })
+
+const expectedKeys = [arrayForEachKey, arrayForEachReturnKey, arrayForEachFilterKey]
+
+function handleForEachObject(value: any, context: ConfigContext, opts: ContextResolveOpts) {
+  // Validate input object
+  if (value[arrayForEachReturnKey] === undefined) {
+    throw new ConfigurationError(`Missing ${arrayForEachReturnKey} field next to ${arrayForEachKey} field.`, {
+      value,
+    })
+  }
+
+  const unexpectedKeys = Object.keys(value).filter((k) => !expectedKeys.includes(k))
+
+  if (unexpectedKeys.length > 0) {
+    const extraKeys = naturalList(unexpectedKeys.map((k) => JSON.stringify(k)))
+
+    throw new ConfigurationError(`Found one or more unexpected keys on $forEach object: ${extraKeys}`, {
+      value,
+      expectedKeys,
+      unexpectedKeys,
+    })
+  }
+
+  // Try resolving the value of the $forEach key
+  let resolvedInput = resolveTemplateStrings(value[arrayForEachKey], context, opts)
+  const isObject = isPlainObject(resolvedInput)
+
+  if (!Array.isArray(resolvedInput) && !isObject) {
+    if (opts.allowPartial) {
+      return value
+    } else {
+      throw new ConfigurationError(
+        `Value of ${arrayForEachKey} key must be (or resolve to) an array or mapping object (got ${typeof resolvedInput})`,
+        {
+          value,
+          resolved: resolvedInput,
+        }
+      )
+    }
+  }
+
+  const filterExpression = value[arrayForEachFilterKey]
+
+  // TODO: maybe there's a more efficient way to do the cloning/extending?
+  const loopContext = cloneDeep(context)
+
+  const output: unknown[] = []
+
+  for (const i of Object.keys(resolvedInput)) {
+    const itemValue = resolvedInput[i]
+
+    loopContext["item"] = new GenericContext({ key: i, value: itemValue })
+
+    // Have to override the cache in the parent context here
+    // TODO: make this a little less hacky :P
+    delete loopContext["_resolvedValues"]["item.key"]
+    delete loopContext["_resolvedValues"]["item.value"]
+
+    // Check $filter clause output, if applicable
+    if (filterExpression !== undefined) {
+      const filterResult = resolveTemplateStrings(value[arrayForEachFilterKey], loopContext, opts)
+
+      if (filterResult === false) {
+        continue
+      } else if (filterResult !== true) {
+        throw new ConfigurationError(
+          `${arrayForEachFilterKey} clause in ${arrayForEachKey} loop must resolve to a boolean value (got ${typeof resolvedInput})`,
+          {
+            itemValue,
+            filterExpression,
+            filterResult,
+          }
+        )
+      }
+    }
+
+    output.push(resolveTemplateStrings(value[arrayForEachReturnKey], loopContext, opts))
+  }
+
+  // Need to resolve once more to handle e.g. $concat expressions
+  return resolveTemplateStrings(output, context, opts)
+}
+
+/**
+ * Returns `true` if the given value is a string and looks to contain a template string.
+ */
+export function maybeTemplateString(value: Primitive) {
+  return !!value && typeof value === "string" && value.includes("${")
+}
+
+/**
+ * Returns `true` if the given value or any value in a given object or array seems to contain a template string.
+ */
+export function mayContainTemplateString(obj: any): boolean {
+  let out = false
+
+  if (isPrimitive(obj)) {
+    return maybeTemplateString(obj)
+  }
+
+  deepMap(obj, (v) => {
+    if (maybeTemplateString(v)) {
+      out = true
+    }
+  })
+
+  return out
+}
 
 /**
  * Scans for all template strings in the given object and lists the referenced keys.
@@ -421,24 +584,48 @@ function buildBinaryExpression(head: any, tail: any) {
   }, head)
 }
 
-function buildLogicalExpression(head: any, tail: any) {
+function buildLogicalExpression(head: any, tail: any, opts: ContextResolveOpts) {
   return tail.reduce((result: any, element: any) => {
     const operator = element[1]
     const leftRes = result
     const rightRes = element[3]
 
-    // We need to manually handle and propagate errors because the parser doesn't support promises
-    if (leftRes && leftRes._error) {
-      return leftRes
-    }
-
-    const left = getValue(leftRes)
-
     switch (operator) {
       case "&&":
-        return !left ? leftRes : rightRes
+        if (leftRes && leftRes._error) {
+          if (!opts.allowPartial && leftRes._error.type === missingKeyExceptionType) {
+            return false
+          }
+          return leftRes
+        }
+
+        const leftValue = getValue(leftRes)
+
+        if (leftValue === undefined) {
+          return { resolved: false }
+        } else if (!leftValue) {
+          return { resolved: leftValue }
+        } else {
+          if (rightRes && rightRes._error) {
+            if (!opts.allowPartial && rightRes._error.type === missingKeyExceptionType) {
+              return false
+            }
+            return rightRes
+          }
+
+          const rightValue = getValue(rightRes)
+
+          if (rightValue === undefined) {
+            return { resolved: false }
+          } else {
+            return rightRes
+          }
+        }
       case "||":
-        return left ? leftRes : rightRes
+        if (leftRes && leftRes._error) {
+          return leftRes
+        }
+        return getValue(leftRes) ? leftRes : rightRes
       default:
         const err = new TemplateStringError("Unrecognized operator: " + operator, { operator })
         return { _error: err }

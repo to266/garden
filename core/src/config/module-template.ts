@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -10,7 +10,6 @@ import { joi, apiVersionSchema, joiUserIdentifier, CustomObjectSchema } from "./
 import { baseModuleSpecSchema, BaseModuleSpec, ModuleConfig } from "./module"
 import { dedent, deline } from "../util/string"
 import { GardenResource, prepareModuleResource } from "./base"
-import { DOCS_BASE_URL } from "../constants"
 import { resolveTemplateStrings } from "../template-string/template-string"
 import { validateWithPath } from "./validation"
 import { Garden } from "../garden"
@@ -26,7 +25,7 @@ import { ModuleTemplateConfigContext } from "./template-contexts/module"
 const inputTemplatePattern = "${inputs.*}"
 const parentNameTemplate = "${parent.name}"
 const moduleTemplateNameTemplate = "${template.name}"
-const moduleTemplateReferenceUrl = DOCS_BASE_URL + "/reference/template-strings#module-configuration-context"
+const moduleTemplateReferenceUrl = "./template-strings/modules.md"
 
 export const templateKind = "ModuleTemplate"
 
@@ -54,10 +53,9 @@ export async function resolveModuleTemplate(
     ...resource,
     modules: [],
   }
-  const branch = garden.vcsBranch
-  const loggedIn = !!garden.enterpriseApi
-  const enterpriseDomain = garden.enterpriseApi?.domain
-  const context = new ProjectConfigContext({ ...garden, branch, loggedIn, enterpriseDomain })
+  const loggedIn = !!garden.cloudApi
+  const enterpriseDomain = garden.cloudApi?.domain
+  const context = new ProjectConfigContext({ ...garden, loggedIn, enterpriseDomain })
   const resolved = resolveTemplateStrings(partial, context)
 
   // Validate the partial config
@@ -115,10 +113,9 @@ export async function resolveTemplatedModule(
   // Resolve template strings for fields. Note that inputs are partially resolved, and will be fully resolved later
   // when resolving the resolving the resulting modules. Inputs that are used in module names must however be resolvable
   // immediately.
-  const branch = garden.vcsBranch
-  const loggedIn = !!garden.enterpriseApi
-  const enterpriseDomain = garden.enterpriseApi?.domain
-  const templateContext = new EnvironmentConfigContext({ ...garden, branch, loggedIn, enterpriseDomain })
+  const loggedIn = !!garden.cloudApi
+  const enterpriseDomain = garden.cloudApi?.domain
+  const templateContext = new EnvironmentConfigContext({ ...garden, loggedIn, enterpriseDomain })
   const resolvedWithoutInputs = resolveTemplateStrings(
     { ...config, spec: omit(config.spec, "inputs") },
     templateContext
@@ -165,8 +162,7 @@ export async function resolveTemplatedModule(
   // Prepare modules and resolve templated names
   const context = new ModuleTemplateConfigContext({
     ...garden,
-    branch: garden.vcsBranch,
-    loggedIn: !!garden.enterpriseApi,
+    loggedIn: !!garden.cloudApi,
     enterpriseDomain,
     parentName: resolved.name,
     templateName: template.name,

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,7 +14,7 @@ import { DeleteCommand } from "./delete"
 import { DeployCommand } from "./deploy"
 import { DevCommand } from "./dev"
 import { GetCommand } from "./get/get"
-import { EnterpriseCommand } from "./enterprise/enterprise"
+import { CloudCommand } from "./cloud/cloud"
 import { LinkCommand } from "./link/link"
 import { LogsCommand } from "./logs"
 import { MigrateCommand } from "./migrate"
@@ -46,7 +46,7 @@ export const getCoreCommands = (): (Command | CommandGroup)[] => [
   new DeployCommand(),
   new DevCommand(),
   new ExecCommand(),
-  new EnterpriseCommand(),
+  new CloudCommand(),
   new GetCommand(),
   new LinkCommand(),
   new LoginCommand(),
@@ -69,6 +69,6 @@ export const getCoreCommands = (): (Command | CommandGroup)[] => [
   new ValidateCommand(),
 ]
 
-export function getAllCommands() {
+export function getBuiltinCommands() {
   return getCoreCommands().flatMap((cmd) => (cmd instanceof CommandGroup ? [cmd, ...cmd.getSubCommands()] : [cmd]))
 }

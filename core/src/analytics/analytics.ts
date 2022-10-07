@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,7 +7,6 @@
  */
 
 import codenamize = require("@codenamize/codenamize")
-import segmentClient = require("analytics-node")
 import { platform, release } from "os"
 import ci = require("ci-info")
 import { uniq } from "lodash"
@@ -64,6 +63,8 @@ interface AnalyticsEventProperties {
   enterpriseDomain?: string
   enterpriseDomainV2?: string
   isLoggedIn: boolean
+  cloudUserId?: string
+  customer?: string
   ciName: string | null
   system: SystemInfo
   isCI: boolean
@@ -103,7 +104,8 @@ interface AnalyticsEvent {
 }
 
 export interface SegmentEvent {
-  userId: string
+  userId?: string
+  anonymousId?: string
   event: AnalyticsType
   properties: AnalyticsEventProperties
 }
@@ -139,6 +141,8 @@ export class AnalyticsHandler {
   private enterpriseProjectIdV2?: string
   private enterpriseDomainV2?: string
   private isLoggedIn: boolean
+  private cloudUserId?: string
+  private cloudCustomerName?: string
   private ciName = ci.name
   private systemConfig: SystemInfo
   private isCI = ci.isCI
@@ -148,11 +152,12 @@ export class AnalyticsHandler {
   private projectMetadata: ProjectMetadata
 
   private constructor(garden: Garden, log: LogEntry) {
+    const segmentClient = require("analytics-node")
     this.segment = new segmentClient(API_KEY, { flushAt: 20, flushInterval: 300 })
     this.log = log
     this.garden = garden
     this.sessionId = garden.sessionId
-    this.isLoggedIn = !!garden.enterpriseApi
+    this.isLoggedIn = !!garden.cloudApi
     this.globalConfigStore = new GlobalConfigStore()
     // Events that are queued or flushed but the network response hasn't returned
     this.pendingEvents = new Map()
@@ -211,7 +216,7 @@ export class AnalyticsHandler {
       ...globalConf.analytics,
     }
 
-    const originName = await this.garden.vcs.getOriginName(this.log)
+    const originName = this.garden.vcsInfo.originUrl
 
     const projectName = this.garden.projectName
     this.projectName = this.hash(projectName)
@@ -221,7 +226,7 @@ export class AnalyticsHandler {
     this.projectId = this.hash(projectId)
     this.projectIdV2 = this.hashV2(projectId)
 
-    // The enterprise project ID is the UID for this project in Garden Enterprise that the user puts
+    // The enterprise project ID is the UID for this project in Garden Cloud that the user puts
     // in the project level Garden configuration. Not to be confused with the anonymized project ID we generate from
     // the project name for the purpose of analytics.
     const enterpriseProjectId = this.garden.projectId
@@ -235,33 +240,64 @@ export class AnalyticsHandler {
       this.enterpriseDomainV2 = this.hashV2(enterpriseDomain)
     }
 
-    const gitHubUrl = getGitHubUrl("README.md#Analytics")
-    if (this.analyticsConfig.firstRun || this.analyticsConfig.showOptInMessage) {
-      const analyticsEnabled = this.analyticsEnabled()
+    if (this.isLoggedIn) {
+      // Initialize the cloud userId and customer for logged in users
+      try {
+        const profile = await this.garden.cloudApi?.getProfile()
 
-      if (!this.isCI && analyticsEnabled) {
-        const msg = dedent`
-          Thanks for installing Garden! We work hard to provide you with the best experience we can. We collect some anonymized usage data while you use Garden. If you'd like to know more about what we collect or if you'd like to opt out of telemetry, please read more at ${gitHubUrl}
-        `
-        this.log.info({ symbol: "info", msg })
+        if (profile) {
+          this.cloudUserId = `${profile.organization.name}_${profile.id}`
+          this.cloudCustomerName = profile.organization.name
+        }
+      } catch (err) {
+        this.log.debug(`Getting profile from API failed with error: ${err.message}`)
       }
+    }
 
+    const gitHubUrl = getGitHubUrl("docs/misc/telemetry.md")
+
+    const analyticsEnabled = this.analyticsEnabled()
+
+    // Show the analytics msg on the first run
+    if (!this.isCI && (this.analyticsConfig.firstRun || this.analyticsConfig.showOptInMessage)) {
+      const msg = dedent`
+        Thanks for installing Garden! We work hard to provide you with the best experience we can. We collect some anonymized usage data while you use Garden. If you'd like to know more about what we collect or if you'd like to opt out of telemetry, please read more at ${gitHubUrl}
+      `
+      this.log.info({ symbol: "info", msg })
+    }
+
+    // Create an anonymous analytics ID or associate a cloud user ID with an existing anonymous ID
+    // First run - Always identify the user
+    // No Cloud Version defined - Re-identify using the Anonymous User ID
+    // Cloud Profile is not defined and the cloud user is available - Identify with the cloud user ID
+    if (
+      this.analyticsConfig.firstRun ||
+      this.analyticsConfig.cloudVersion === undefined ||
+      (!this.analyticsConfig.cloudProfileEnabled && this.cloudUserId)
+    ) {
       this.analyticsConfig = {
         firstRun: false,
         userId: this.analyticsConfig.userId || uuidv4(),
         optedIn: true,
         showOptInMessage: false,
+        cloudVersion: 0,
+        cloudProfileEnabled: !(this.cloudUserId === undefined),
       }
 
       await this.globalConfigStore.set([globalConfigKeys.analytics], this.analyticsConfig)
+      this.log.debug(
+        `Analytics identify new anonymous user and enables cloud profile - ${this.analyticsConfig.cloudProfileEnabled}`
+      )
 
       if (this.segment && analyticsEnabled) {
-        const userId = getUserId({ analytics: this.analyticsConfig })
-        const userIdV2 = this.hashV2(userId)
+        const anonymousUserId = getUserId({ analytics: this.analyticsConfig })
+        const userIdV2 = this.hashV2(anonymousUserId)
         this.segment.identify({
-          userId,
+          userId: this.cloudUserId,
+          anonymousId: anonymousUserId,
           traits: {
             userIdV2,
+            customer: this.cloudCustomerName,
             platform: platform(),
             platformVersion: release(),
             gardenVersion: getPackageVersion(),
@@ -344,6 +380,7 @@ export class AnalyticsHandler {
       enterpriseDomainV2: this.enterpriseDomainV2,
       isLoggedIn: this.isLoggedIn,
       ciName: this.ciName,
+      customer: this.cloudCustomerName,
       system: this.systemConfig,
       isCI: this.isCI,
       sessionId: this.sessionId,
@@ -374,7 +411,8 @@ export class AnalyticsHandler {
   private track(event: AnalyticsEvent) {
     if (this.segment && this.analyticsEnabled()) {
       const segmentEvent: SegmentEvent = {
-        userId: getUserId({ analytics: this.analyticsConfig }),
+        userId: this.cloudUserId,
+        anonymousId: getUserId({ analytics: this.analyticsConfig }),
         event: event.type,
         properties: {
           ...this.getBasicAnalyticsProperties(),

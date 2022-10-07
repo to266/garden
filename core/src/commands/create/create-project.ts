@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,7 +9,6 @@
 import chalk from "chalk"
 import dedent from "dedent"
 import { pathExists, writeFile, copyFile } from "fs-extra"
-import inquirer from "inquirer"
 import { Command, CommandResult, CommandParams } from "../base"
 import { printHeader } from "../../logger/util"
 import { isDirectory } from "../../util/fs"
@@ -17,10 +16,11 @@ import { loadConfigResources } from "../../config/base"
 import { resolve, basename, relative, join } from "path"
 import { GardenBaseError, ParameterError } from "../../exceptions"
 import { renderProjectConfigReference } from "../../docs/config"
-import { addConfig } from "./helpers"
+import { addConfig, createBaseOpts } from "./helpers"
 import { wordWrap } from "../../util/string"
 import { LoggerType } from "../../logger/logger"
 import { PathParameter, StringParameter, BooleanParameter, StringOption } from "../../cli/params"
+import { userPrompt } from "../../util/util"
 
 const ignorefileName = ".gardenignore"
 const defaultIgnorefile = dedent`
@@ -33,6 +33,7 @@ export const defaultProjectConfigFilename = "project.garden.yml"
 
 const createProjectArgs = {}
 const createProjectOpts = {
+  ...createBaseOpts,
   dir: new PathParameter({
     help: "Directory to place the project in (defaults to current directory).",
     defaultValue: ".",
@@ -95,6 +96,11 @@ export class CreateProjectCommand extends Command<CreateProjectArgs, CreateProje
     printHeader(headerLog, "Create new project", "pencil2")
   }
 
+  // Defining it like this because it'll stall on waiting for user input.
+  isPersistent() {
+    return true
+  }
+
   async action({
     opts,
     log,
@@ -121,7 +127,7 @@ export class CreateProjectCommand extends Command<CreateProjectArgs, CreateProje
     if (opts.interactive && !opts.name) {
       log.root.stop()
 
-      const answer = await inquirer.prompt({
+      const answer = await userPrompt({
         name: "name",
         message: "Project name:",
         type: "input",
@@ -135,9 +141,9 @@ export class CreateProjectCommand extends Command<CreateProjectArgs, CreateProje
 
     const { yaml } = renderProjectConfigReference({
       yamlOpts: {
-        commentOutEmpty: true,
+        onEmptyValue: opts["skip-comments"] ? "remove" : "comment out",
         filterMarkdown: true,
-        renderBasicDescription: true,
+        renderBasicDescription: !opts["skip-comments"],
         renderFullDescription: false,
         renderValue: "preferExample",
         presetValues: {

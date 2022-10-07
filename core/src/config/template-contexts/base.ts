@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -53,7 +53,7 @@ export function schema(joiSchema: Joi.Schema) {
 // Note: we're using classes here to be able to use decorators to describe each context node and key
 export abstract class ConfigContext {
   private readonly _rootContext: ConfigContext
-  private readonly _resolvedValues: { [path: string]: string }
+  private readonly _resolvedValues: { [path: string]: any }
 
   // This is used for special-casing e.g. runtime.* resolution
   protected _alwaysAllowPartial: boolean

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -30,9 +30,8 @@ export interface BuildTaskParams {
 export class BuildTask extends BaseTask {
   type: TaskType = "build"
   concurrencyLimit = 5
-
-  private graph: ConfigGraph
-  private module: GardenModule
+  graph: ConfigGraph
+  module: GardenModule
 
   constructor({ garden, graph, log, module, force }: BuildTaskParams & { _guard: true }) {
     // Note: The _guard attribute is to prevent accidentally bypassing the factory method

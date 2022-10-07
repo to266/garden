@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -17,7 +17,7 @@ import {
 } from "../../../src/types/plugin/plugin"
 import { GardenService, ServiceState } from "../../../src/types/service"
 import { RuntimeContext, prepareRuntimeContext } from "../../../src/runtime-context"
-import { expectError, makeTestGardenA, stubModuleAction, projectRootA, TestGarden } from "../../helpers"
+import { expectError, makeTestGardenA, stubModuleAction, projectRootA, TestGarden, makeTestGarden } from "../../helpers"
 import { ActionRouter } from "../../../src/actions"
 import { LogEntry } from "../../../src/logger/log-entry"
 import { GardenModule } from "../../../src/types/module"
@@ -65,10 +65,11 @@ describe("ActionRouter", () => {
   }
 
   before(async () => {
-    garden = await TestGarden.factory(projectRootA, {
+    garden = await makeTestGarden(projectRootA, {
       plugins: [basePlugin, testPlugin, testPluginB],
       config: projectConfig,
     })
+    projectConfig.path = garden.projectRoot
     log = garden.log
     actions = await garden.getActionRouter()
     graph = await garden.getConfigGraph({ log: garden.log, emit: false })
@@ -142,7 +143,6 @@ describe("ActionRouter", () => {
         const name = "added-by-test-plugin"
 
         expect(result).to.eql({
-          addBuildDependencies: [{ by: name, on: "module-b" }],
           addRuntimeDependencies: [{ by: name, on: "service-b" }],
           addModules: [
             {
@@ -554,13 +554,22 @@ describe("ActionRouter", () => {
           runtimeContext,
           devMode: false,
           hotReload: false,
+          localMode: false,
         })
         expect(result).to.eql({ forwardablePorts: [], state: "ready", detail: {}, outputs: { base: "ok", foo: "ok" } })
       })
 
       it("should emit a serviceStatus event", async () => {
         garden.events.eventLog = []
-        await actions.getServiceStatus({ log, service, graph, runtimeContext, devMode: false, hotReload: false })
+        await actions.getServiceStatus({
+          log,
+          service,
+          graph,
+          runtimeContext,
+          devMode: false,
+          hotReload: false,
+          localMode: false,
+        })
         const event = garden.events.eventLog[0]
         expect(event).to.exist
         expect(event.name).to.eql("serviceStatus")
@@ -577,7 +586,16 @@ describe("ActionRouter", () => {
         })
 
         await expectError(
-          () => actions.getServiceStatus({ log, service, graph, runtimeContext, devMode: false, hotReload: false }),
+          () =>
+            actions.getServiceStatus({
+              log,
+              service,
+              graph,
+              runtimeContext,
+              devMode: false,
+              hotReload: false,
+              localMode: false,
+            }),
           (err) =>
             expect(stripAnsi(err.message)).to.equal(
               "Error validating outputs from service 'service-a': key .foo must be a string"
@@ -591,7 +609,16 @@ describe("ActionRouter", () => {
         })
 
         await expectError(
-          () => actions.getServiceStatus({ log, service, graph, runtimeContext, devMode: false, hotReload: false }),
+          () =>
+            actions.getServiceStatus({
+              log,
+              service,
+              graph,
+              runtimeContext,
+              devMode: false,
+              hotReload: false,
+              localMode: false,
+            }),
           (err) =>
             expect(stripAnsi(err.message)).to.equal(
               "Error validating outputs from service 'service-a': key .base must be a string"
@@ -610,6 +637,7 @@ describe("ActionRouter", () => {
           force: true,
           devMode: false,
           hotReload: false,
+          localMode: false,
         })
         expect(result).to.eql({ forwardablePorts: [], state: "ready", detail: {}, outputs: { base: "ok", foo: "ok" } })
       })
@@ -624,6 +652,7 @@ describe("ActionRouter", () => {
           force: true,
           devMode: false,
           hotReload: false,
+          localMode: false,
         })
         const moduleVersion = service.module.version.versionString
         const event1 = garden.events.eventLog[0]
@@ -661,6 +690,7 @@ describe("ActionRouter", () => {
               force: true,
               devMode: false,
               hotReload: false,
+              localMode: false,
             }),
           (err) =>
             expect(stripAnsi(err.message)).to.equal(
@@ -684,6 +714,7 @@ describe("ActionRouter", () => {
               force: true,
               devMode: false,
               hotReload: false,
+              localMode: false,
             }),
           (err) =>
             expect(stripAnsi(err.message)).to.equal(
@@ -1011,7 +1042,7 @@ describe("ActionRouter", () => {
   })
 
   describe("getModuleActionHandler", () => {
-    const path = process.cwd()
+    const path = projectRootA
 
     it("should return default handler, if specified and no handler is available", async () => {
       const gardenA = await makeTestGardenA()
@@ -1054,7 +1085,7 @@ describe("ActionRouter", () => {
           ],
         })
 
-        const _garden = await TestGarden.factory(path, {
+        const _garden = await makeTestGarden(path, {
           plugins: [foo],
           config: {
             apiVersion: DEFAULT_API_VERSION,
@@ -1096,7 +1127,7 @@ describe("ActionRouter", () => {
         })
         const foo = createGardenPlugin({
           name: "foo",
-          dependencies: ["base"],
+          dependencies: [{ name: "base" }],
           extendModuleTypes: [
             {
               name: "bar",
@@ -1107,7 +1138,7 @@ describe("ActionRouter", () => {
           ],
         })
 
-        const _garden = await TestGarden.factory(path, {
+        const _garden = await makeTestGarden(path, {
           plugins: [base, foo],
           config: {
             apiVersion: DEFAULT_API_VERSION,
@@ -1149,7 +1180,7 @@ describe("ActionRouter", () => {
         })
         const foo = createGardenPlugin({
           name: "foo",
-          dependencies: ["base"],
+          dependencies: [{ name: "base" }],
           extendModuleTypes: [
             {
               name: "bar",
@@ -1161,7 +1192,7 @@ describe("ActionRouter", () => {
         })
         const too = createGardenPlugin({
           name: "too",
-          dependencies: ["base", "foo"],
+          dependencies: [{ name: "base" }, { name: "foo" }],
           extendModuleTypes: [
             {
               name: "bar",
@@ -1172,7 +1203,7 @@ describe("ActionRouter", () => {
           ],
         })
 
-        const _garden = await TestGarden.factory(path, {
+        const _garden = await makeTestGarden(path, {
           plugins: [base, too, foo],
           config: {
             apiVersion: DEFAULT_API_VERSION,
@@ -1218,7 +1249,7 @@ describe("ActionRouter", () => {
           })
           const foo = createGardenPlugin({
             name: "foo",
-            dependencies: ["base"],
+            dependencies: [{ name: "base" }],
             extendModuleTypes: [
               {
                 name: "bar",
@@ -1230,7 +1261,7 @@ describe("ActionRouter", () => {
           })
           const too = createGardenPlugin({
             name: "too",
-            dependencies: ["base"],
+            dependencies: [{ name: "base" }],
             extendModuleTypes: [
               {
                 name: "bar",
@@ -1241,7 +1272,7 @@ describe("ActionRouter", () => {
             ],
           })
 
-          const _garden = await TestGarden.factory(path, {
+          const _garden = await makeTestGarden(path, {
             plugins: [base, too, foo],
             config: {
               apiVersion: DEFAULT_API_VERSION,
@@ -1287,7 +1318,7 @@ describe("ActionRouter", () => {
         })
         const foo = createGardenPlugin({
           name: "foo",
-          dependencies: ["base"],
+          dependencies: [{ name: "base" }],
           extendModuleTypes: [
             {
               name: "bar",
@@ -1298,7 +1329,7 @@ describe("ActionRouter", () => {
           ],
         })
 
-        const _garden = await TestGarden.factory(path, {
+        const _garden = await makeTestGarden(path, {
           plugins: [base, foo],
           config: {
             apiVersion: DEFAULT_API_VERSION,
@@ -1352,7 +1383,7 @@ describe("ActionRouter", () => {
         })
         const foo = createGardenPlugin({
           name: "foo",
-          dependencies: ["base"],
+          dependencies: [{ name: "base" }],
           createModuleTypes: [
             {
               name: "moo",
@@ -1366,7 +1397,7 @@ describe("ActionRouter", () => {
           ],
         })
 
-        const _garden = await TestGarden.factory(path, {
+        const _garden = await makeTestGarden(path, {
           plugins: [base, foo],
           config: projectConfigWithBase,
         })
@@ -1396,7 +1427,7 @@ describe("ActionRouter", () => {
         })
         const foo = createGardenPlugin({
           name: "foo",
-          dependencies: ["base"],
+          dependencies: [{ name: "base" }],
           createModuleTypes: [
             {
               name: "moo",
@@ -1408,7 +1439,7 @@ describe("ActionRouter", () => {
           ],
         })
 
-        const _garden = await TestGarden.factory(path, {
+        const _garden = await makeTestGarden(path, {
           plugins: [base, foo],
           config: projectConfigWithBase,
         })
@@ -1439,7 +1470,7 @@ describe("ActionRouter", () => {
         })
         const baseB = createGardenPlugin({
           name: "base-b",
-          dependencies: ["base-a"],
+          dependencies: [{ name: "base-a" }],
           createModuleTypes: [
             {
               name: "base-b",
@@ -1452,7 +1483,7 @@ describe("ActionRouter", () => {
         })
         const foo = createGardenPlugin({
           name: "foo",
-          dependencies: ["base-b"],
+          dependencies: [{ name: "base-b" }],
           createModuleTypes: [
             {
               name: "moo",
@@ -1464,7 +1495,7 @@ describe("ActionRouter", () => {
           ],
         })
 
-        const _garden = await TestGarden.factory(path, {
+        const _garden = await makeTestGarden(path, {
           plugins: [baseA, baseB, foo],
           config: {
             apiVersion: DEFAULT_API_VERSION,
@@ -1554,9 +1585,9 @@ describe("ActionRouter", () => {
         },
       })
 
-      const path = process.cwd()
+      const path = projectRootA
 
-      const _garden = await TestGarden.factory(path, {
+      const _garden = await makeTestGarden(path, {
         plugins: [baseA, baseB, foo],
         config: {
           apiVersion: DEFAULT_API_VERSION,
@@ -1715,6 +1746,7 @@ describe("ActionRouter", () => {
           log,
           devMode: false,
           hotReload: false,
+          localMode: false,
           force: false,
         },
         defaultHandler: handler,
@@ -1765,6 +1797,7 @@ describe("ActionRouter", () => {
           log,
           devMode: false,
           hotReload: false,
+          localMode: false,
           force: false,
         },
         defaultHandler: handler,
@@ -1818,6 +1851,7 @@ describe("ActionRouter", () => {
           log,
           devMode: false,
           hotReload: false,
+          localMode: false,
           force: false,
         },
         defaultHandler: async (params) => {
@@ -1868,6 +1902,7 @@ describe("ActionRouter", () => {
               log,
               devMode: false,
               hotReload: false,
+              localMode: false,
               force: false,
             },
             defaultHandler: async () => {
@@ -2148,7 +2183,7 @@ const moduleActionDescriptions = getModuleActionDescriptions()
 
 const testPlugin = createGardenPlugin({
   name: "test-plugin",
-  dependencies: ["base"],
+  dependencies: [{ name: "base" }],
 
   handlers: <PluginActionHandlers>{
     configureProvider: async (params) => {
@@ -2170,14 +2205,13 @@ const testPlugin = createGardenPlugin({
       const moduleName = "added-by-" + params.ctx.provider.name
 
       return {
-        addBuildDependencies: [{ by: moduleName, on: "module-b" }],
         addRuntimeDependencies: [{ by: moduleName, on: "service-b" }],
         addModules: [
           {
             kind: "Module",
             name: moduleName,
             type: "test",
-            path: projectRootA,
+            path: params.ctx.projectRoot,
             services: [
               {
                 name: moduleName,

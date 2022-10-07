@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -17,7 +17,7 @@ import { ModuleConfig } from "../../config/module"
 import {
   ContainerModule,
   ContainerRegistryConfig,
-  defaultTag,
+  defaultTag as _defaultTag,
   defaultImageNamespace,
   ContainerModuleConfig,
 } from "./config"
@@ -60,16 +60,10 @@ const helpers = {
    * (when we don't need to push to remote registries).
    */
   getLocalImageId(config: ContainerModuleConfig, version: ModuleVersion): string {
-    const hasDockerfile = helpers.hasDockerfile(config, version)
-
-    if (config.spec.image && !hasDockerfile) {
-      return config.spec.image
-    } else {
-      const { versionString } = version
-      const name = helpers.getLocalImageName(config)
-      const parsedImage = helpers.parseImageId(name)
-      return helpers.unparseImageId({ ...parsedImage, tag: versionString })
-    }
+    const { versionString } = version
+    const name = helpers.getLocalImageName(config)
+    const parsedImage = helpers.parseImageId(name)
+    return helpers.unparseImageId({ ...parsedImage, tag: versionString })
   },
 
   /**
@@ -169,11 +163,11 @@ const helpers = {
     }
   },
 
-  parseImageId(imageId: string): ParsedImageId {
+  parseImageId(imageId: string, defaultTag = _defaultTag): ParsedImageId {
     let [name, tag] = splitLast(imageId, ":")
 
     if (name === "") {
-      name = tag
+      name = tag || ""
       tag = defaultTag
     }
 
@@ -233,7 +227,7 @@ const helpers = {
   },
 
   async imageExistsLocally(module: ContainerModule, log: LogEntry, ctx: PluginContext) {
-    const identifier = helpers.getLocalImageId(module, module.version)
+    const identifier = module.outputs["local-image-id"]
     const result = await helpers.dockerCli({
       cwd: module.path,
       args: ["images", identifier, "-q"],

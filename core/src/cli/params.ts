@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -52,6 +52,7 @@ export interface ParameterConstructor<T> {
   cliDefault?: T
   cliOnly?: boolean
   hidden?: boolean
+  spread?: boolean
 }
 
 export abstract class Parameter<T> {
@@ -68,6 +69,7 @@ export abstract class Parameter<T> {
   valueName: string
   overrides: string[]
   hidden: boolean
+  spread: boolean
 
   readonly cliDefault: T | undefined // Optionally specify a separate default for CLI invocation
   readonly cliOnly: boolean // If true, only expose in the CLI, and not in the HTTP/WS server.
@@ -83,6 +85,7 @@ export abstract class Parameter<T> {
     cliDefault,
     cliOnly,
     hidden,
+    spread,
   }: ParameterConstructor<T>) {
     this.help = help
     this.required = required || false
@@ -94,6 +97,7 @@ export abstract class Parameter<T> {
     this.cliDefault = cliDefault
     this.cliOnly = cliOnly || false
     this.hidden = hidden || false
+    this.spread = spread || false
   }
 
   // TODO: merge this and the parseString method?
@@ -290,6 +294,23 @@ export class BooleanParameter extends Parameter<boolean> {
   }
 }
 
+/**
+ * Similar to `StringsOption`, but doesn't split individual option values on `,`
+ */
+export class TagsOption extends Parameter<string[] | undefined> {
+  type = "array:tag"
+  schema = joi.array().items(joi.string())
+
+  coerce(input?: string | string[]): string[] {
+    if (!input) {
+      return []
+    } else if (!isArray(input)) {
+      input = [input]
+    }
+    return input
+  }
+}
+
 export class EnvironmentOption extends StringParameter {
   type = "string"
   schema = joi.environment()
@@ -338,7 +359,6 @@ export const globalOptions = {
     alias: "r",
     help:
       "Override project root directory (defaults to working directory). Can be absolute or relative to current directory.",
-    defaultValue: process.cwd(),
   }),
   "silent": new BooleanParameter({
     alias: "s",

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -10,7 +10,7 @@ import { joiArray, joi } from "../../config/common"
 import { GardenModule } from "../../types/module"
 import { ServiceState, ServiceStatus, ingressHostnameSchema, GardenService } from "../../types/service"
 import { resolve } from "path"
-import { ExecTestSpec, execTestSchema } from "../exec"
+import { ExecTestSpec, execTestSchema } from "../exec/exec"
 import { prepareEnvironment, gcloud, getEnvironmentStatus, GOOGLE_CLOUD_DEFAULT_REGION } from "./common"
 import { createGardenPlugin } from "../../types/plugin/plugin"
 import { baseServiceSpecSchema, CommonServiceSpec } from "../../config/service"

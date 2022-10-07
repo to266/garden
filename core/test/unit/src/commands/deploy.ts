@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,7 +9,7 @@
 import { join } from "path"
 import { DeployCommand } from "../../../../src/commands/deploy"
 import { expect } from "chai"
-import { buildExecModule } from "../../../../src/plugins/exec"
+import { buildExecModule } from "../../../../src/plugins/exec/exec"
 import { ServiceState, ServiceStatus } from "../../../../src/types/service"
 import {
   taskResultOutputs,
@@ -99,6 +99,7 @@ const testProvider = () => {
 describe("DeployCommand", () => {
   const plugins = [testProvider()]
   const projectRootB = join(dataDir, "test-project-b")
+  const projectRootA = join(dataDir, "test-project-a")
 
   // TODO: Verify that services don't get redeployed when same version is already deployed.
   // TODO: Test with --watch flag
@@ -119,10 +120,13 @@ describe("DeployCommand", () => {
       opts: withDefaultGlobalOpts({
         "dev-mode": undefined,
         "hot-reload": undefined,
+        "local-mode": undefined,
         "watch": false,
         "force": false,
         "force-build": true,
         "skip": undefined,
+        "skip-dependencies": false,
+        "forward": false,
       }),
     })
 
@@ -466,10 +470,13 @@ describe("DeployCommand", () => {
       opts: withDefaultGlobalOpts({
         "dev-mode": undefined,
         "hot-reload": undefined,
+        "local-mode": undefined,
         "watch": false,
         "force": false,
         "force-build": true,
         "skip": undefined,
+        "skip-dependencies": false,
+        "forward": false,
       }),
     })
 
@@ -493,6 +500,58 @@ describe("DeployCommand", () => {
       "task.task-a",
       "task.task-c",
     ])
+  })
+
+  context("when --skip-dependencies is passed", () => {
+    it("should not process runtime dependencies for the requested services", async () => {
+      const garden = await makeTestGarden(projectRootA, { plugins })
+      const log = garden.log
+      const command = new DeployCommand()
+
+      const { result, errors } = await command.action({
+        garden,
+        log,
+        headerLog: log,
+        footerLog: log,
+        args: {
+          services: ["service-b", "service-c"],
+        },
+        opts: withDefaultGlobalOpts({
+          "dev-mode": undefined,
+          "hot-reload": undefined,
+          "local-mode": undefined,
+          "watch": false,
+          "force": false,
+          "force-build": true,
+          "skip": undefined,
+          "skip-dependencies": true, // <-----
+          "forward": false,
+        }),
+      })
+
+      if (errors) {
+        throw errors[0]
+      }
+
+      expect(Object.keys(taskResultOutputs(result!)).sort()).to.eql([
+        "build.module-a",
+        "build.module-b",
+        "build.module-c",
+        // service-b has a dependency on service-a, it should be skipped here
+        // "deploy.service-a",
+        "deploy.service-b",
+        "deploy.service-c",
+        "get-service-status.service-a",
+        "get-service-status.service-b",
+        "get-service-status.service-c",
+        "get-task-result.task-c",
+        "stage-build.module-a",
+        "stage-build.module-b",
+        "stage-build.module-c",
+        // service-c has a dependency on task-c, it should be skipped here
+        // "task.task-c",
+      ])
+    })
   })
 
   it("should be protected", async () => {
@@ -519,10 +578,13 @@ describe("DeployCommand", () => {
       opts: withDefaultGlobalOpts({
         "dev-mode": undefined,
         "hot-reload": undefined,
+        "local-mode": undefined,
         "watch": false,
         "force": false,
         "force-build": true,
         "skip": undefined,
+        "skip-dependencies": false,
+        "forward": false,
       }),
     })
 
@@ -569,10 +631,13 @@ describe("DeployCommand", () => {
       opts: withDefaultGlobalOpts({
         "dev-mode": undefined,
         "hot-reload": undefined,
+        "local-mode": undefined,
         "watch": false,
         "force": false,
         "force-build": true,
         "skip": undefined,
+        "skip-dependencies": false,
+        "forward": false,
       }),
     })
 
@@ -612,10 +677,13 @@ describe("DeployCommand", () => {
       opts: withDefaultGlobalOpts({
         "dev-mode": undefined,
         "hot-reload": undefined,
+        "local-mode": undefined,
         "watch": false,
         "force": false,
         "force-build": true,
         "skip": ["service-b"],
+        "skip-dependencies": false,
+        "forward": false,
       }),
     })
 
@@ -626,11 +694,11 @@ describe("DeployCommand", () => {
     expect(Object.keys(taskResultOutputs(result!)).includes("deploy.service-b")).to.be.false
   })
 
-  describe("prepare", () => {
-    it("return persistent=true if --watch is set", async () => {
+  describe("isPersistent", () => {
+    it("should return persistent=true if --watch is set", async () => {
       const cmd = new DeployCommand()
       const log = getLogger().placeholder()
-      const { persistent } = await cmd.prepare({
+      const persistent = cmd.isPersistent({
         log,
         headerLog: log,
         footerLog: log,
@@ -640,19 +708,22 @@ describe("DeployCommand", () => {
         opts: withDefaultGlobalOpts({
           "dev-mode": undefined,
           "hot-reload": undefined,
+          "local-mode": undefined,
           "watch": true,
           "force": false,
           "force-build": true,
           "skip": ["service-b"],
+          "skip-dependencies": false,
+          "forward": false,
         }),
       })
       expect(persistent).to.be.true
     })
 
-    it("return persistent=true if --dev is set", async () => {
+    it("should return persistent=true if --dev is set", async () => {
       const cmd = new DeployCommand()
       const log = getLogger().placeholder()
-      const { persistent } = await cmd.prepare({
+      const persistent = cmd.isPersistent({
         log,
         headerLog: log,
         footerLog: log,
@@ -662,19 +733,22 @@ describe("DeployCommand", () => {
         opts: withDefaultGlobalOpts({
           "dev-mode": [],
           "hot-reload": undefined,
+          "local-mode": undefined,
           "watch": false,
           "force": false,
           "force-build": true,
           "skip": ["service-b"],
+          "skip-dependencies": false,
+          "forward": false,
         }),
       })
       expect(persistent).to.be.true
     })
 
-    it("return persistent=true if --hot-reload is set", async () => {
+    it("should return persistent=true if --hot-reload is set", async () => {
       const cmd = new DeployCommand()
       const log = getLogger().placeholder()
-      const { persistent } = await cmd.prepare({
+      const persistent = cmd.isPersistent({
         log,
         headerLog: log,
         footerLog: log,
@@ -684,10 +758,63 @@ describe("DeployCommand", () => {
         opts: withDefaultGlobalOpts({
           "dev-mode": undefined,
           "hot-reload": ["*"],
+          "local-mode": undefined,
           "watch": false,
           "force": false,
           "force-build": true,
           "skip": ["service-b"],
+          "skip-dependencies": false,
+          "forward": false,
+        }),
+      })
+      expect(persistent).to.be.true
+    })
+
+    it("should return persistent=true if --local-mode is set", async () => {
+      const cmd = new DeployCommand()
+      const log = getLogger().placeholder()
+      const persistent = cmd.isPersistent({
+        log,
+        headerLog: log,
+        footerLog: log,
+        args: {
+          services: undefined,
+        },
+        opts: withDefaultGlobalOpts({
+          "dev-mode": undefined,
+          "hot-reload": undefined,
+          "local-mode": [],
+          "watch": false,
+          "force": false,
+          "force-build": true,
+          "skip": ["service-b"],
+          "skip-dependencies": false,
+          "forward": false,
+        }),
+      })
+      expect(persistent).to.be.true
+    })
+
+    it("should return persistent=true if --follow is set", async () => {
+      const cmd = new DeployCommand()
+      const log = getLogger().placeholder()
+      const persistent = cmd.isPersistent({
+        log,
+        headerLog: log,
+        footerLog: log,
+        args: {
+          services: undefined,
+        },
+        opts: withDefaultGlobalOpts({
+          "dev-mode": undefined,
+          "hot-reload": undefined,
+          "local-mode": undefined,
+          "watch": false,
+          "force": false,
+          "force-build": true,
+          "skip": ["service-b"],
+          "skip-dependencies": false,
+          "forward": true,
         }),
       })
       expect(persistent).to.be.true

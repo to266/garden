@@ -1,4 +1,437 @@
 
+<a name="0.12.45"></a>
+## [0.12.45](https://github.com/garden-io/garden/compare/0.12.44...0.12.45) (2022-09-29)
+
+### BREAKING CHANGES
+
+* check for requirements being installed ([#3097](https://github.com/garden-io/garden/issues/3097)) ([63628b13b](https://github.com/garden-io/garden/commit/63628b13b))
+* **terraform:** upgraded default terraform tool version to `1.2.9` ([#3220](https://github.com/garden-io/garden/issues/3220)) ([8f6a3be44](https://github.com/garden-io/garden/commit/8f6a3be44))
+
+### Bug Fixes
+
+* subcommand help listing ([#3261](https://github.com/garden-io/garden/issues/3261)) ([5e9593440](https://github.com/garden-io/garden/commit/5e9593440))
+* ensure semver format in git/rsync version regex ([81cb0f98f](https://github.com/garden-io/garden/commit/81cb0f98f))
+* make copy target actually default to source ([#3223](https://github.com/garden-io/garden/issues/3223)) ([b8960204c](https://github.com/garden-io/garden/commit/b8960204c))
+* **docs:** fixed template strings rendering in docs generator ([7bc1e602a](https://github.com/garden-io/garden/commit/7bc1e602a))
+* **cli:** run exec commands from proj root ([5d0cd005c](https://github.com/garden-io/garden/commit/5d0cd005c))
+* **core:** fix Rosetta detection logic for OSX ([ff96b2ff1](https://github.com/garden-io/garden/commit/ff96b2ff1))
+* **core:** fixed concurrency issue with plugin tool downloads ([1c65ac7f5](https://github.com/garden-io/garden/commit/1c65ac7f5))
+
+### Features
+
+* add option to run git pulls in parallel ([5554a3dc8](https://github.com/garden-io/garden/commit/5554a3dc8))
+* allow module overlap if one or both of them are disabled ([#3222](https://github.com/garden-io/garden/issues/3222)) ([b97678999](https://github.com/garden-io/garden/commit/b97678999))
+* use M1 native tools where available ([#3185](https://github.com/garden-io/garden/pull/3185))
+* **k8s:** simple `mode=max` support with a list of not supported registries ([#3239](https://github.com/garden-io/garden/pull/3239))
+
+### Improvements
+
+* more precise error handling in binary tool version checker ([c102ebae9](https://github.com/garden-io/garden/commit/c102ebae9))
+* check for requirements being installed ([#3097](https://github.com/garden-io/garden/issues/3097)) ([63628b13b](https://github.com/garden-io/garden/commit/63628b13b))
+* **dev-mode:** allow non-subpaths for dev-mode sync ([2f71ce5d2](https://github.com/garden-io/garden/commit/2f71ce5d2)) and ([83de16e6](https://github.com/garden-io/garden/commit/83de16e6))
+* **jib:** stricter validation and better error messages ([203ef357a](https://github.com/garden-io/garden/commit/203ef357a))
+* **jib:** updated LTS JDKs (8 and 11) to the latest releases ([75ed16436](https://github.com/garden-io/garden/commit/75ed16436))
+* **jib:** supported JDK 17 LTS version ([3f3c91f31](https://github.com/garden-io/garden/commit/3f3c91f31))
+* **jib:** supported OpenJDK 13 ([12ffec527](https://github.com/garden-io/garden/commit/12ffec527))
+* **jib:** configurable JDK path ([3fa1fe45b](https://github.com/garden-io/garden/commit/3fa1fe45b))
+* **jib:** upgraded Gradle version to `7.5.1` ([6a6504e1d](https://github.com/garden-io/garden/commit/6a6504e1d))
+* **jib:** upgraded Maven version to `3.8.5` ([84bcb67b2](https://github.com/garden-io/garden/commit/84bcb67b2))
+* **jib:** configurable Maven binary ([dd8396c08](https://github.com/garden-io/garden/commit/dd8396c08))
+* **jib:** configurable Maven phases in jib modules ([e0b6d0814](https://github.com/garden-io/garden/commit/e0b6d0814))
+* **local-mode:** allow multiple port-forwards ([a98af5363](https://github.com/garden-io/garden/commit/a98af5363))
+* **terraform:** upgraded default terraform tool version to `1.2.9` ([#3220](https://github.com/garden-io/garden/issues/3220)) ([8f6a3be44](https://github.com/garden-io/garden/commit/8f6a3be44))
+
+<a name="0.12.44"></a>
+## [0.12.44](https://github.com/garden-io/garden/compare/0.12.43...0.12.44) (2022-08-03)
+
+### Bug Fixes
+
+* support `--dependants-first` option in `delete service` command ([7ce03030d](https://github.com/garden-io/garden/commit/7ce03030d))
+* **docs:** fixed multi-char aliases in commands' descriptions ([51ab495af](https://github.com/garden-io/garden/commit/51ab495af))
+* **k8s:** missing logs in some scenarios when tests/tasks with artifacts fail ([a21103212](https://github.com/garden-io/garden/commit/a21103212))
+
+### Features
+
+* added `local.arch` template variable ([f213c8675](https://github.com/garden-io/garden/commit/f213c8675))
+* **config:** add concat helper function ([f3a2e29d2](https://github.com/garden-io/garden/commit/f3a2e29d2))
+* **config:** support array literals in template strings ([1d119557c](https://github.com/garden-io/garden/commit/1d119557c))
+
+### Improvements
+
+* used async sleeps between retries in recoverable process ([efd6e73bd](https://github.com/garden-io/garden/commit/efd6e73bd))
+* **local-mode:** don't watch files in local-mode modules ([11f6d146a](https://github.com/garden-io/garden/commit/11f6d146a))
+
+<a name="0.12.43"></a>
+## [0.12.43](https://github.com/garden-io/garden/compare/0.12.42...0.12.43) (2022-07-14)
+
+### Bug Fixes
+
+* include stderr for outputs from commands returning an artifact ([#3043](https://github.com/garden-io/garden/issues/3043)) ([f04a5624b](https://github.com/garden-io/garden/commit/f04a5624b))
+* **cli:** bad error message when dependency fails in run task/test cmd ([894d7f765](https://github.com/garden-io/garden/commit/894d7f765))
+* **cloud:** handle "=" separator in named vars passed as command args ([7ff078a58](https://github.com/garden-io/garden/commit/7ff078a58))
+* **core:** resolve runtime values in test configs ([4da5b03e5](https://github.com/garden-io/garden/commit/4da5b03e5))
+
+### Features
+
+* add get workflows command ([#3030](https://github.com/garden-io/garden/issues/3030)) ([0f42478b4](https://github.com/garden-io/garden/commit/0f42478b4))
+* **core:** opt for deleting services in dep order ([267eac9fb](https://github.com/garden-io/garden/commit/267eac9fb))
+* **k8s:** local mode for helm modules ([#3033](https://github.com/garden-io/garden/issues/3033)) ([a7722b58e](https://github.com/garden-io/garden/commit/a7722b58e))
+* **k8s:** local mode for kubernetes modules ([f44ff3979](https://github.com/garden-io/garden/commit/f44ff3979))
+
+### Improvements
+
+* add warning if project id but not logged in to cloud ([9d431cb8f](https://github.com/garden-io/garden/commit/9d431cb8f))
+* add more context for kubeconfig err ([#3022](https://github.com/garden-io/garden/issues/3022)) ([1efa7429b](https://github.com/garden-io/garden/commit/1efa7429b))
+* minor improvements in core/cloud interactivity ([7cedc25d2](https://github.com/garden-io/garden/commit/7cedc25d2))
+* **k8s:** verbose logging of the local app output in local mode ([6450936f8](https://github.com/garden-io/garden/commit/6450936f8))
+
+<a name="0.12.42"></a>
+## [0.12.42](https://github.com/garden-io/garden/compare/0.12.41...0.12.42) (2022-06-21)
+
+### Bug Fixes
+
+* consider all garden projects as safe git repos ([1e2974fa9](https://github.com/garden-io/garden/commit/1e2974fa9))
+* update nginx ingress controller for kind ([#3005](https://github.com/garden-io/garden/issues/3005)) ([82a73b200](https://github.com/garden-io/garden/commit/82a73b200))
+* allow garden helm plugin to install crds ([3b6996846](https://github.com/garden-io/garden/commit/3b6996846))
+* handle unknown cloud profile ([#2994](https://github.com/garden-io/garden/issues/2994)) ([1e5707e18](https://github.com/garden-io/garden/commit/1e5707e18))
+* **core:** corrected git `safe.directory` paths for windows ([99d85951d](https://github.com/garden-io/garden/commit/99d85951d))
+* **k8s:** copy imagePullSecrets to builder pods ([1bcdf7a46](https://github.com/garden-io/garden/commit/1bcdf7a46))
+
+### Features
+
+* core-cloud interactivity ([232b55793](https://github.com/garden-io/garden/commit/232b55793))
+* **cli:** --full option for get modules command ([4a17b0405](https://github.com/garden-io/garden/commit/4a17b0405))
+* **k8s:** local mode for container modules ([#2949](https://github.com/garden-io/garden/issues/2949)) ([f9cad6c40](https://github.com/garden-io/garden/commit/f9cad6c40))
+
+### Improvements
+
+* optimized safety checks for git repos ([33ab184fa](https://github.com/garden-io/garden/commit/33ab184fa)) and ([df07657c6](https://github.com/garden-io/garden/commit/df07657c6))
+* bump alpine, node and gcloud SDK version in support ([#3013](https://github.com/garden-io/garden/issues/3013)) ([baf4d79d8](https://github.com/garden-io/garden/commit/baf4d79d8))
+* update bundled Docker to 20.10.9
+* **k8s:** change kaniko default image to 1.8.1 ([#3007](https://github.com/garden-io/garden/issues/3007)) ([cdf5695b7](https://github.com/garden-io/garden/commit/cdf5695b7))
+
+<a name="0.12.41"></a>
+## [0.12.41](https://github.com/garden-io/garden/compare/0.12.40...0.12.41) (2022-05-24)
+
+### Bug Fixes
+
+* increased num of retries and timeouts for rsync ([b404bb77b](https://github.com/garden-io/garden/commit/b404bb77b))
+* transitive dependency handling ([#2937](https://github.com/garden-io/garden/issues/2937)) ([d94c83b83](https://github.com/garden-io/garden/commit/d94c83b83))
+* workflows fail silently and --output doesn't work ([eb7f7b29c](https://github.com/garden-io/garden/commit/eb7f7b29c))
+* git repo ownership issue ([e4219a779](https://github.com/garden-io/garden/commit/e4219a779))
+* add nginx ingressClass resource for microk8s ([51df08193](https://github.com/garden-io/garden/commit/51df08193))
+* **cli:** potential OOM error during module and error serialization ([02cacf63e](https://github.com/garden-io/garden/commit/02cacf63e))
+* **cli:** typo in field filtering in scan command ([59e0fcd01](https://github.com/garden-io/garden/commit/59e0fcd01))
+* **cloud:** fix duplicate footer on config change ([9b83e522c](https://github.com/garden-io/garden/commit/9b83e522c))
+* **container:** fix unneeded redeploys in dev mode ([b5be2e629](https://github.com/garden-io/garden/commit/b5be2e629))
+* **core:** fix git submodules usage ([bdbc36672](https://github.com/garden-io/garden/commit/bdbc36672))
+* **core:** improve ingress warning ([e0b3cb0e5](https://github.com/garden-io/garden/commit/e0b3cb0e5))
+* **core:** avoid type error when active request not found ([caf3b4653](https://github.com/garden-io/garden/commit/caf3b4653))
+* **core:** infinite loop in module resolution (related to perf improvements) ([f52a166f7](https://github.com/garden-io/garden/commit/f52a166f7))
+* **core:** slow graph resolution for large (100+ modules) projects ([ecaaa2e86](https://github.com/garden-io/garden/commit/ecaaa2e86))
+* **core:** don't use expensive circular dependency detection unless needed ([025c9298e](https://github.com/garden-io/garden/commit/025c9298e))
+* **docs:** re-generated docs ([4ea2a7bb2](https://github.com/garden-io/garden/commit/4ea2a7bb2))
+* **jib:** fixed jib module's include config ([284df0d75](https://github.com/garden-io/garden/commit/284df0d75))
+* **k8s:** avoid unnecessary namespace patch no-op on init ([c57cf77d9](https://github.com/garden-io/garden/commit/c57cf77d9))
+* **plugins:** deploy an ingressclass resource if using microk8s ([e5a535604](https://github.com/garden-io/garden/commit/e5a535604))
+
+### Features
+
+* pulumi plugin ([9f6393970](https://github.com/garden-io/garden/commit/9f6393970))
+* expose TTY setting on container modules ([5c17c6022](https://github.com/garden-io/garden/commit/5c17c6022))
+* analytics with cloud user metadata ([#2943](https://github.com/garden-io/garden/issues/2943)) ([edd654423](https://github.com/garden-io/garden/commit/edd654423))
+* **plugins:** add a warn if suitable ingressclass is not found ([adb00f1f5](https://github.com/garden-io/garden/commit/adb00f1f5))
+
+### Improvements
+
+* **cli:** minor logging additions ([0c04355e2](https://github.com/garden-io/garden/commit/0c04355e2))
+* **cli:** better stack traces for error reports, with source mapping ([615d8d012](https://github.com/garden-io/garden/commit/615d8d012))
+* **core:** reduce unnecessary computation during config resolution ([c500d3b00](https://github.com/garden-io/garden/commit/c500d3b00))
+* **core:** more efficient module resolution ([4b31adced](https://github.com/garden-io/garden/commit/4b31adced)) and ([61d9b85ed](https://github.com/garden-io/garden/commit/61d9b85ed))
+* **core:** add --skip flag to test command ([6c046e8ce](https://github.com/garden-io/garden/commit/6c046e8ce))
+
+### Performance Improvements
+
+* **core:** reduce unnecessary I/O to resolve build paths ([e2803cfba](https://github.com/garden-io/garden/commit/e2803cfba))
+
+<a name="0.12.40"></a>
+## [0.12.40](https://github.com/garden-io/garden/compare/0.12.39...0.12.40) (2022-04-26)
+
+### Bug Fixes
+
+* **cli:** sporadic fsevents error on mac machines ([c5fcc672](https://github.com/garden-io/garden/commit/c5fcc672))
+* **core:** attempt to fix unhandled promise rejection from got ([8aa4bc1c](https://github.com/garden-io/garden/commit/8aa4bc1c))
+* **docs:** fixed broken links ([014bfb65](https://github.com/garden-io/garden/commit/014bfb65))
+
+### Features
+
+* add skip-comments option to cli create command ([2e0f20c9](https://github.com/garden-io/garden/commit/2e0f20c9))
+
+<a name="0.12.39"></a>
+## [0.12.39](https://github.com/garden-io/garden/compare/0.12.38...0.12.39) (2022-04-08)
+
+### Bug Fixes
+
+* add default ingress class for nginx ingress controller ([31b0773f](https://github.com/garden-io/garden/commit/31b0773f))
+* **cli:** avoid unnecessary git scan at startup ([5eeea39c](https://github.com/garden-io/garden/commit/5eeea39c))
+* **cli:** uncaught promise error when version check fails ([6cf6ed65](https://github.com/garden-io/garden/commit/6cf6ed65))
+* **core:** require auth key for server endpoints ([56051a5b](https://github.com/garden-io/garden/commit/56051a5b))
+* **core:** always show dashboard link ([64dd9b86](https://github.com/garden-io/garden/commit/64dd9b86))
+* **k8s:** handle spaces in kubectl path provided to Mutagen ([2045cf41](https://github.com/garden-io/garden/commit/2045cf41))
+* **template:** error in && operator during partial initial resolution ([8a8215de](https://github.com/garden-io/garden/commit/8a8215de))
+
+### Features
+
+* **k8s:** allow overriding kubectl path in provider config ([233c5a1b](https://github.com/garden-io/garden/commit/233c5a1b))
+
+### Improvements
+
+* **cloud:** print link to Cloud namespace if applicable ([dac340b8](https://github.com/garden-io/garden/commit/dac340b8))
+
+<a name="0.12.38"></a>
+## [0.12.38](https://github.com/garden-io/garden/compare/0.12.37...0.12.38) (2022-03-28)
+
+### Bug Fixes
+
+* **cli:** error when starting file watching on macOS ([0ef33fbe](https://github.com/garden-io/garden/commit/0ef33fbe))
+* **core:** fix EADDRNOTAVAIL error in watch mode ([07989820](https://github.com/garden-io/garden/commit/07989820))
+
+<a name="0.12.37"></a>
+## [0.12.37](https://github.com/garden-io/garden/compare/0.12.36...0.12.37) (2022-03-18)
+
+### Bug Fixes
+
+* fix maven download for windows ([7686eade](https://github.com/garden-io/garden/commit/7686eade))
+* **docs:** fix broken anchor link ([9b6f264e](https://github.com/garden-io/garden/commit/9b6f264e))
+* **examples:** updated golang version in examples ([241118e6](https://github.com/garden-io/garden/commit/241118e6))
+* **exec:** properly handle empty lines in local service logs ([5147f60e](https://github.com/garden-io/garden/commit/5147f60e))
+* **k8s:** escape spaces in local mutagen dests ([f100d1d2](https://github.com/garden-io/garden/commit/f100d1d2))
+
+### Features
+
+* **template:** add 'string' template function ([6b96296c](https://github.com/garden-io/garden/commit/6b96296c))
+
+<a name="0.12.36"></a>
+## [0.12.36](https://github.com/garden-io/garden/compare/0.12.35...0.12.36) (2022-03-15)
+
+### Bug Fixes
+
+* **cli:** allow running garden CLI in custom Command `exec` field ([6c8577a8](https://github.com/garden-io/garden/commit/6c8577a8))
+* **core:** treat null/false as undefined for container image field ([65e7f7f8](https://github.com/garden-io/garden/commit/65e7f7f8))
+* **core:** add missing await for user prompt ([0696fb4f](https://github.com/garden-io/garden/commit/0696fb4f))
+* **core:** fix infinite recursion that could cause OOM error ([c1c6c896](https://github.com/garden-io/garden/commit/c1c6c896))
+* **exec:** ensure we stream error log entries ([08b98ca1](https://github.com/garden-io/garden/commit/08b98ca1))
+* **k8s:** sync error with space in user home directory name ([7f55c31b](https://github.com/garden-io/garden/commit/7f55c31b))
+* **scripts:** fixed deps installation script ([f902f404](https://github.com/garden-io/garden/commit/f902f404))
+
+### Features
+
+* **core:** support persistent local processes ([40c21a00](https://github.com/garden-io/garden/commit/40c21a00))
+* **core:** add template string sha256 function ([ae49bd7b](https://github.com/garden-io/garden/commit/ae49bd7b))
+
+### Improvements
+
+* **k8s:** bump BuildKit version to 0.9.3 ([34ef856c](https://github.com/garden-io/garden/commit/34ef856c))
+
+<a name="0.12.35"></a>
+## [0.12.35](https://github.com/garden-io/garden/compare/0.12.34...0.12.35) (2022-01-26)
+
+### Bug Fixes
+
+* updated brew command in dependency install script ([5847f09b](https://github.com/garden-io/garden/commit/5847f09b))
+* **cli:** potential OOM error for large projects ([0ecd7410](https://github.com/garden-io/garden/commit/0ecd7410))
+* **core:** ignore trailing slashes in project config domains ([7cfa4fb0](https://github.com/garden-io/garden/commit/7cfa4fb0))
+* **k8s:** handle specific error case in log streaming ([5dd1c34e](https://github.com/garden-io/garden/commit/5dd1c34e))
+* **k8s:** use namespace from module when port forwarding ([c99f8e92](https://github.com/garden-io/garden/commit/c99f8e92))
+* **k8s:** use correct Mutagen termination command ([c644ef49](https://github.com/garden-io/garden/commit/c644ef49))
+* **template:** allow missing keys in AND (&&) conditionals ([7bf19540](https://github.com/garden-io/garden/commit/7bf19540))
+* **template:** don't fail validation on partially resolved helper calls ([f03579e7](https://github.com/garden-io/garden/commit/f03579e7))
+
+### Code Refactoring
+
+* **k8s:** use environment variable to prevent Mutagen autostart ([1efcf3bb](https://github.com/garden-io/garden/commit/1efcf3bb))
+
+### Features
+
+* **cli:** custom commands ([4e7c741a](https://github.com/garden-io/garden/commit/4e7c741a))
+* **core:** debug logfiles ([ebff37a7](https://github.com/garden-io/garden/commit/ebff37a7))
+* **core:** --with-dependants option for build cmd ([c3fbbbe6](https://github.com/garden-io/garden/commit/c3fbbbe6))
+* **k8s:** support kustomize on kubernetes modules ([e954f72c](https://github.com/garden-io/garden/commit/e954f72c))
+* **template:** add join helper function, to convert an array to string ([3c02abb6](https://github.com/garden-io/garden/commit/3c02abb6))
+
+### Improvements
+
+* **cloud:** handle AEC for Helm services ([3326c3c5](https://github.com/garden-io/garden/commit/3326c3c5))
+* **core:** evaluate null|false as undefined for dockerfile field ([4f43eb6b](https://github.com/garden-io/garden/commit/4f43eb6b))
+* **core:** better workflow error logging ([0415fb7b](https://github.com/garden-io/garden/commit/0415fb7b))
+* **examples:** update ingress specs in example garden projects ([423da252](https://github.com/garden-io/garden/commit/423da252))
+
+### Performance Improvements
+
+* **core:** faster hashing and test speed improvements ([7f6a7600](https://github.com/garden-io/garden/commit/7f6a7600))
+
+<a name="0.12.34"></a>
+## [0.12.34](https://github.com/garden-io/garden/compare/0.12.33...0.12.34) (2022-01-04)
+
+### Bug Fixes
+
+* **cli:** get rid of EPIPE error and OOM check ([f950755b](https://github.com/garden-io/garden/commit/f950755b))
+* **core:** properly handle sparse build deps ([2fb8a119](https://github.com/garden-io/garden/commit/2fb8a119))
+* **docs:** fix a typo in the how garden works doc ([fdc2e0d4](https://github.com/garden-io/garden/commit/fdc2e0d4))
+* **docs:** fix a typo in the using-garden-in-ci doc ([4ec4280b](https://github.com/garden-io/garden/commit/4ec4280b))
+* **docs:** fix typos in the in-cluster building doc ([1fe693a9](https://github.com/garden-io/garden/commit/1fe693a9))
+* **docs:** fix a typo in the hot-reload doc ([d27b3672](https://github.com/garden-io/garden/commit/d27b3672))
+* **docs:** fix typos in the dontainer modules doc ([fdd68352](https://github.com/garden-io/garden/commit/fdd68352))
+* **docs:** fix typos in the code sync dev doc ([b110866c](https://github.com/garden-io/garden/commit/b110866c))
+* **docs:** fix a typo in the project init doc ([7b60d45e](https://github.com/garden-io/garden/commit/7b60d45e))
+* **docs:** fix a typo in the stack-graph.md doc ([474301d9](https://github.com/garden-io/garden/commit/474301d9))
+* **docs:** fix a typo in welcome.md docs ([ad1af886](https://github.com/garden-io/garden/commit/ad1af886))
+* **k8s:** better handling for long log lines ([cc0ad52a](https://github.com/garden-io/garden/commit/cc0ad52a))
+* **k8s:** fix rollout status check for Recreate ([bcd2df2d](https://github.com/garden-io/garden/commit/bcd2df2d))
+* **k8s:** fix issues with mutagen symlink directory ([7c57b69c](https://github.com/garden-io/garden/commit/7c57b69c))
+* **k8s:** allow any style of path for kubeconfig field ([6e6d4c45](https://github.com/garden-io/garden/commit/6e6d4c45))
+* **template:** template string in helper arguments weren't resolved ([0157fe0d](https://github.com/garden-io/garden/commit/0157fe0d))
+
+### Features
+
+* **config:** add ${datetime.*} template context ([78cd007f](https://github.com/garden-io/garden/commit/78cd007f))
+* **config:** add ${git.commitHash} and ${git.originUrl} template fields ([246b9f67](https://github.com/garden-io/garden/commit/246b9f67))
+* **core:** add --skip-dependencies CLI option ([94ab87f2](https://github.com/garden-io/garden/commit/94ab87f2))
+* **k8s:** arbitrary shared secrets ([11d43b8c](https://github.com/garden-io/garden/commit/11d43b8c))
+* **template:** add indent helper function ([c90ec372](https://github.com/garden-io/garden/commit/c90ec372))
+
+### Improvements
+
+* **core:** show error in watch footer ([01fb0ddf](https://github.com/garden-io/garden/commit/01fb0ddf))
+
+<a name="0.12.33"></a>
+## [0.12.33](https://github.com/garden-io/garden/compare/0.12.32...0.12.33) (2021-12-13)
+
+### Bug Fixes
+
+* **cloud:** add env and ns IDs to event payloads ([9a2f41c5](https://github.com/garden-io/garden/commit/9a2f41c5))
+* **k8s:** remove startupProbes from task and test pods ([e616cae3](https://github.com/garden-io/garden/commit/e616cae3))
+
+### Features
+
+* **core:** module varfiles ([d63e1751](https://github.com/garden-io/garden/commit/d63e1751))
+
+### Improvements
+
+* **cloud:** add pagination to secrets list command ([72937979](https://github.com/garden-io/garden/commit/72937979))
+
+<a name="0.12.32"></a>
+## [0.12.32](https://github.com/garden-io/garden/compare/0.12.31...0.12.32) (2021-12-02)
+
+### Bug Fixes
+
+* **workflows:** fix provider resolution issue ([d1a7b49d](https://github.com/garden-io/garden/commit/d1a7b49d))
+
+<a name="0.12.31"></a>
+## [0.12.31](https://github.com/garden-io/garden/compare/0.12.30...0.12.31) (2021-10-12)
+
+### Bug Fixes
+
+* do not modify baseModule.spec.serviceResource and baseModule.spec.values by the values from the dependent modules ([70c49b1a](https://github.com/garden-io/garden/commit/70c49b1a))
+* **core:** improve project config validation ([c08747ea](https://github.com/garden-io/garden/commit/c08747ea))
+* **core:** ensure we print dev command banner at top ([d31792ef](https://github.com/garden-io/garden/commit/d31792ef))
+* **exec:** statusCommand output not being respected ([8a5bcaee](https://github.com/garden-io/garden/commit/8a5bcaee))
+* **exec:** error when calling garden CLI within exec module tasks ([3fdcffbb](https://github.com/garden-io/garden/commit/3fdcffbb))
+* **helm:** more robust log streaming ([7c9a400c](https://github.com/garden-io/garden/commit/7c9a400c))
+* **k8s:** delete env command would recreate namespace after delete ([b705c6f7](https://github.com/garden-io/garden/commit/b705c6f7))
+* **template:** ignore errors in skipped ternary clause ([8b2eca53](https://github.com/garden-io/garden/commit/8b2eca53))
+
+### Features
+
+* **cli:** allow overriding default local address for port proxies ([21120c52](https://github.com/garden-io/garden/commit/21120c52))
+* **cloud:** register session with API ([946b056a](https://github.com/garden-io/garden/commit/946b056a))
+* **config:** support for-loops for lists ([e6a21527](https://github.com/garden-io/garden/commit/e6a21527))
+* **config:** support list concatenation via $concat keys ([dc869466](https://github.com/garden-io/garden/commit/dc869466))
+
+<a name="0.12.30"></a>
+## [0.12.30](https://github.com/garden-io/garden/compare/0.12.29...0.12.30) (2021-11-05)
+
+### Bug Fixes
+
+* **container:** propagate privileged flag ([58cb5715](https://github.com/garden-io/garden/commit/58cb5715))
+* **k8s:** backwards-compatible deployment logic ([b960b9c6](https://github.com/garden-io/garden/commit/b960b9c6))
+* **k8s:** fix casing in ingress spec ([827ba407](https://github.com/garden-io/garden/commit/827ba407))
+* **k8s:** use module ns in getServiceResource ([62dadfcc](https://github.com/garden-io/garden/commit/62dadfcc))
+* **k8s:** validation fix in serviceResource schema ([f070729a](https://github.com/garden-io/garden/commit/f070729a))
+
+### Features
+
+* **k8s:** add timeout to container services ([2927fa5b](https://github.com/garden-io/garden/commit/2927fa5b))
+
+<a name="0.12.28"></a>
+## [0.12.28](https://github.com/garden-io/garden/compare/0.12.27...0.12.28) (2021-10-24)
+
+### Bug Fixes
+
+* **cli:** ensure help exits with code 0 ([9fb6a6ef](https://github.com/garden-io/garden/commit/9fb6a6ef))
+* **core:** fix test dependencies for dev command ([930b59a3](https://github.com/garden-io/garden/commit/930b59a3))
+* **core:** fix task batch partitioning algorithm ([5625e79d](https://github.com/garden-io/garden/commit/5625e79d))
+* **k8s:** harbor registry support ([#2619](https://github.com/garden-io/garden/issues/2619)) ([edd5e3f4](https://github.com/garden-io/garden/commit/edd5e3f4))
+* **k8s:** uncaught error when trying to patch namespace resource ([2ba8f6dd](https://github.com/garden-io/garden/commit/2ba8f6dd))
+* **k8s:** fix port-forward error handling ([0c859255](https://github.com/garden-io/garden/commit/0c859255))
+
+### Features
+
+* **cloud:** emit session events on exit ([04f58d54](https://github.com/garden-io/garden/commit/04f58d54))
+* **core:** add --force flag to dev command ([4312152d](https://github.com/garden-io/garden/commit/4312152d))
+* **core:** allow sparse arrays for more fields ([b286373c](https://github.com/garden-io/garden/commit/b286373c))
+* **k8s:** add two-way-resolved option for dev mode syncs ([6371af0d](https://github.com/garden-io/garden/commit/6371af0d))
+
+<a name="0.12.27"></a>
+## [0.12.27](https://github.com/garden-io/garden/compare/0.12.26...0.12.27) (2021-09-29)
+
+### Bug Fixes
+
+* fix namespace log line ([a4fa3626](https://github.com/garden-io/garden/commit/a4fa3626))
+* **cli:** get rid of occasional EPIPE error printed after process exit ([571561cb](https://github.com/garden-io/garden/commit/571561cb))
+* **core:** don't add mutating env vars to runtime context ([18c0f1d3](https://github.com/garden-io/garden/commit/18c0f1d3))
+* **core:** ensure we return all callbacks when cloning files ([ecc43b94](https://github.com/garden-io/garden/commit/ecc43b94))
+* **core:** omit `output.detail` from graph events ([e81a4976](https://github.com/garden-io/garden/commit/e81a4976))
+* **core:** fix handling of empty option values ([ed8cee76](https://github.com/garden-io/garden/commit/ed8cee76))
+* **dev-mode:** reuse sync log line ([80448980](https://github.com/garden-io/garden/commit/80448980))
+* **workflows:** defer provider resolution ([039cca45](https://github.com/garden-io/garden/commit/039cca45))
+
+### Features
+
+* **cloud:** add trigger support for push events ([0db506d2](https://github.com/garden-io/garden/commit/0db506d2))
+* **config:** allow skipping source template rendering in generateFiles ([e8406690](https://github.com/garden-io/garden/commit/e8406690))
+* **k8s:** reverse sync modes ([3fece6ff](https://github.com/garden-io/garden/commit/3fece6ff))
+* **k8s:** provider-level defaults for dev mode ([d6c62286](https://github.com/garden-io/garden/commit/d6c62286))
+
+### Improvements
+
+* **cloud:** more robust log streaming ([67f94bfe](https://github.com/garden-io/garden/commit/67f94bfe))
+* **dev-mode:** log sync conflicts ([7467496e](https://github.com/garden-io/garden/commit/7467496e))
+* **port-forward:** also bind to ::1 address by default ([0bd44ef4](https://github.com/garden-io/garden/commit/0bd44ef4))
+
+<a name="0.12.26"></a>
+## [0.12.26](https://github.com/garden-io/garden/compare/0.12.25...0.12.26) (2021-09-13)
+
+### Bug Fixes
+
+* **core:** fix duplicate status line in watch ([868e477f](https://github.com/garden-io/garden/commit/868e477f))
+
+### Features
+
+* add jib provider and jib-container module type ([e453d700](https://github.com/garden-io/garden/commit/e453d700))
+* **cloud:** emit stack graph & task log events ([6382d3dd](https://github.com/garden-io/garden/commit/6382d3dd))
+* **container:** more security options ([c0f14e1b](https://github.com/garden-io/garden/commit/c0f14e1b))
+* **core:** emit live logs from k8s tasks and tests (WIP) ([bfbfb2f1](https://github.com/garden-io/garden/commit/bfbfb2f1))
+* **internal:** support persistent commands in WS API ([3976e9d6](https://github.com/garden-io/garden/commit/3976e9d6))
+* **logs:** allow filtering log lines by tag ([20babc2e](https://github.com/garden-io/garden/commit/20babc2e))
+* **terraform:** add v1.0.5 as a supported version ([740a8eb2](https://github.com/garden-io/garden/commit/740a8eb2))
+
+### Improvements
+
+* log namespace and cloud URL ([c22b47bb](https://github.com/garden-io/garden/commit/c22b47bb))
+* **core:** don't watch dev-enabled modules ([b1124723](https://github.com/garden-io/garden/commit/b1124723))
+* **core:** add --forward flag to deploy command ([8f817d5f](https://github.com/garden-io/garden/commit/8f817d5f))
+
 <a name="0.12.25"></a>
 ## [0.12.25](https://github.com/garden-io/garden/compare/0.12.24...0.12.25) (2021-08-23)
 

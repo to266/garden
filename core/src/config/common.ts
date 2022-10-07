@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -10,11 +10,15 @@ import Joi from "@hapi/joi"
 import Ajv from "ajv"
 import { splitLast } from "../util/util"
 import { deline, dedent } from "../util/string"
-import { cloneDeep } from "lodash"
+import { cloneDeep, isArray } from "lodash"
 import { joiPathPlaceholder } from "./validation"
 import { DEFAULT_API_VERSION } from "../constants"
 
 export const objectSpreadKey = "$merge"
+export const arrayConcatKey = "$concat"
+export const arrayForEachKey = "$forEach"
+export const arrayForEachReturnKey = "$return"
+export const arrayForEachFilterKey = "$filter"
 
 const ajv = new Ajv({ allErrors: true, useDefaults: true })
 
@@ -314,9 +318,14 @@ joi = joi.extend({
   //   return { value }
   // },
   args(schema: any, keys: any) {
-    // Always allow the $merge key, which we resolve and collapse in resolveTemplateStrings()
+    // Always allow the special $merge, $forEach etc. keys, which we resolve and collapse in resolveTemplateStrings()
+    // Note: we allow both the expected schema and strings, since they may be templates resolving to the expected type.
     return schema.keys({
       [objectSpreadKey]: joi.alternatives(joi.object(), joi.string()),
+      [arrayConcatKey]: joi.alternatives(joi.array(), joi.string()),
+      [arrayForEachKey]: joi.alternatives(joi.array(), joi.string()),
+      [arrayForEachFilterKey]: joi.any(),
+      [arrayForEachReturnKey]: joi.any(),
       ...(keys || {}),
     })
   },
@@ -415,7 +424,7 @@ joi = joi.extend({
   type: "sparseArray",
   coerce: {
     method(value) {
-      return { value: value && value.filter((v: any) => v !== undefined && v !== null) }
+      return { value: isArray(value) && value.filter((v: any) => v !== undefined && v !== null) }
     },
   },
 })
@@ -548,7 +557,7 @@ export const moduleVersionSchema = () =>
     versionString: versionStringSchema(),
     dependencyVersions: joi
       .object()
-      .pattern(/.+/, treeVersionSchema())
+      .pattern(/.+/, versionStringSchema().description("version hash of the dependency module"))
       .default(() => ({}))
       .description("The version of each of the dependencies of the module."),
     files: fileNamesSchema(),
@@ -560,3 +569,30 @@ export const apiVersionSchema = () =>
     .default(DEFAULT_API_VERSION)
     .valid(DEFAULT_API_VERSION)
     .description("The schema version of this config (currently not used).")
+
+/**
+ * A little hack to allow unknown fields on the schema and recursively on all object schemas nested in it.
+ * Used when e.g. validating against the schema of a module type base (in which case we want to allow added fields
+ * in the inheriting schema).
+ */
+export function allowUnknown<T extends Joi.Schema>(schema: T) {
+  schema = cloneDeep(schema)
+
+  if (schema["type"] === "object") {
+    schema["_flags"].unknown = true
+
+    for (const key of schema["$_terms"].keys || []) {
+      key.schema = allowUnknown(key.schema)
+    }
+  } else if (schema["type"] === "array" || schema["type"] === "sparseArray") {
+    const terms = schema["$_terms"]
+    if (terms.items) {
+      terms.items = terms.items.map((item: Joi.Schema) => allowUnknown(item))
+    }
+    if (terms._inclusions) {
+      terms._inclusions = terms._inclusions.map((item: Joi.Schema) => allowUnknown(item))
+    }
+  }
+
+  return schema
+}

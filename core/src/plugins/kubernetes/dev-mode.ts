@@ -1,51 +1,41 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { containerDevModeSchema, ContainerDevModeSpec } from "../container/config"
-import { dedent, gardenAnnotationKey } from "../../util/string"
+import { ContainerDevModeSpec, DevModeSyncSpec } from "../container/config"
+import { gardenAnnotationKey } from "../../util/string"
 import { set } from "lodash"
 import { getResourceContainer, getResourcePodSpec } from "./util"
-import { HotReloadableResource } from "./hot-reload/hot-reload"
+import { SyncableResource } from "./hot-reload/hot-reload"
 import { LogEntry } from "../../logger/log-entry"
 import { joinWithPosix } from "../../util/fs"
 import chalk from "chalk"
 import { PluginContext } from "../../plugin-context"
 import { ConfigurationError } from "../../exceptions"
-import { ensureMutagenSync, getKubectlExecDestination, mutagenAgentPath, mutagenConfigLock } from "./mutagen"
-import { joiIdentifier } from "../../config/common"
-import { KubernetesPluginContext } from "./config"
+import {
+  ensureMutagenSync,
+  getKubectlExecDestination,
+  mutagenAgentPath,
+  mutagenConfigLock,
+  SyncConfig,
+} from "./mutagen"
+import { KubernetesDevModeDefaults, KubernetesPluginContext, KubernetesProvider } from "./config"
+import { isConfiguredForDevMode } from "./status/status"
+import { k8sSyncUtilImageName } from "./constants"
 
-const syncUtilImageName = "gardendev/k8s-sync:0.1.1"
+export const builtInExcludes = ["/**/*.git", "**/*.garden"]
+
+export const devModeGuideLink = "https://docs.garden.io/guides/code-synchronization-dev-mode"
 
 interface ConfigureDevModeParams {
-  target: HotReloadableResource
+  target: SyncableResource
   spec: ContainerDevModeSpec
   containerName?: string
 }
-
-export interface KubernetesDevModeSpec extends ContainerDevModeSpec {
-  containerName?: string
-}
-
-export const kubernetesDevModeSchema = () =>
-  containerDevModeSchema().keys({
-    containerName: joiIdentifier().description(
-      `Optionally specify the name of a specific container to sync to. If not specified, the first container in the workload is used.`
-    ),
-  }).description(dedent`
-    Specifies which files or directories to sync to which paths inside the running containers of the service when it's in dev mode, and overrides for the container command and/or arguments.
-
-    Note that \`serviceResource\` must also be specified to enable dev mode.
-
-    Dev mode is enabled when running the \`garden dev\` command, and by setting the \`--dev\` flag on the \`garden deploy\` command.
-
-    See the [Code Synchronization guide](https://docs.garden.io/guides/code-synchronization-dev-mode) for more information.
-  `)
 
 /**
  * Configures the specified Deployment, DaemonSet or StatefulSet for dev mode.
@@ -90,7 +80,7 @@ export function configureDevMode({ target, spec, containerName }: ConfigureDevMo
 
   const initContainer = {
     name: "garden-dev-init",
-    image: syncUtilImageName,
+    image: k8sSyncUtilImageName,
     command: ["/bin/sh", "-c", "cp /usr/local/bin/mutagen-agent " + mutagenAgentPath],
     imagePullPolicy: "IfNotPresent",
     volumeMounts: [gardenVolumeMount],
@@ -135,7 +125,7 @@ export async function startDevModeSync({
 
   return mutagenConfigLock.acquire("start-sync", async () => {
     // Validate the target
-    if (target.metadata.annotations?.[gardenAnnotationKey("dev-mode")] !== "true") {
+    if (!isConfiguredForDevMode(target)) {
       throw new ConfigurationError(`Resource ${resourceName} is not deployed in dev mode`, {
         target,
       })
@@ -152,14 +142,16 @@ export async function startDevModeSync({
     }
 
     const k8sCtx = <KubernetesPluginContext>ctx
+    const k8sProvider = <KubernetesProvider>k8sCtx.provider
+    const defaults = k8sProvider.config.devMode?.defaults || {}
 
     let i = 0
 
     for (const s of spec.sync) {
       const key = `${keyBase}-${i}`
 
-      const alpha = joinWithPosix(moduleRoot, s.source)
-      const beta = await getKubectlExecDestination({
+      const localPath = joinWithPosix(moduleRoot, s.source).replace(/ /g, "\\ ") // Escape spaces in path
+      const remoteDestination = await getKubectlExecDestination({
         ctx: k8sCtx,
         log,
         namespace,
@@ -168,28 +160,62 @@ export async function startDevModeSync({
         targetPath: s.target,
       })
 
-      const sourceDescription = chalk.white(s.source)
-      const targetDescription = `${chalk.white(s.target)} in ${chalk.white(resourceName)}`
+      const localPathDescription = chalk.white(s.source)
+      const remoteDestinationDescription = `${chalk.white(s.target)} in ${chalk.white(resourceName)}`
+      let sourceDescription: string
+      let targetDescription: string
+      if (isReverseMode(s.mode)) {
+        sourceDescription = remoteDestinationDescription
+        targetDescription = localPathDescription
+      } else {
+        sourceDescription = localPathDescription
+        targetDescription = remoteDestinationDescription
+      }
+
       const description = `${sourceDescription} to ${targetDescription}`
 
-      ctx.log.info({ symbol: "info", section: serviceName, msg: chalk.gray(`Syncing ${description} (${s.mode})`) })
+      log.info({ symbol: "info", section: serviceName, msg: chalk.gray(`Syncing ${description} (${s.mode})`) })
 
       await ensureMutagenSync({
+        ctx,
         // Prefer to log to the main view instead of the handler log context
-        log: ctx.log,
+        log,
         key,
         logSection: serviceName,
         sourceDescription,
         targetDescription,
-        config: {
-          alpha,
-          beta,
-          mode: s.mode,
-          ignore: s.exclude || [],
-        },
+        config: makeSyncConfig({ defaults, spec: s, localPath, remoteDestination }),
       })
 
       i++
     }
   })
 }
+
+export function makeSyncConfig({
+  localPath,
+  remoteDestination,
+  defaults,
+  spec,
+}: {
+  localPath: string
+  remoteDestination: string
+  defaults: KubernetesDevModeDefaults | null
+  spec: DevModeSyncSpec
+}): SyncConfig {
+  const s = spec
+  const d = defaults || {}
+  const reverse = isReverseMode(s.mode)
+  return {
+    alpha: reverse ? remoteDestination : localPath,
+    beta: reverse ? localPath : remoteDestination,
+    mode: s.mode,
+    ignore: [...builtInExcludes, ...(d["exclude"] || []), ...(s.exclude || [])],
+    defaultOwner: s.defaultOwner === undefined ? d["owner"] : s.defaultOwner,
+    defaultGroup: s.defaultGroup === undefined ? d["group"] : s.defaultGroup,
+    defaultDirectoryMode: s.defaultDirectoryMode === undefined ? d["directoryMode"] : s.defaultDirectoryMode,
+    defaultFileMode: s.defaultFileMode === undefined ? d["fileMode"] : s.defaultFileMode,
+  }
+}
+
+const isReverseMode = (mode: string) => mode === "one-way-reverse" || mode === "one-way-replica-reverse"

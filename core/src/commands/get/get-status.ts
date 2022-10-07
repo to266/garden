@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -49,7 +49,6 @@ export class GetStatusCommand extends Command {
   name = "status"
   help = "Outputs the full status of your environment."
 
-  workflows = true
   streamEvents = true
 
   outputsSchema = () =>
@@ -66,14 +65,9 @@ export class GetStatusCommand extends Command {
     printHeader(headerLog, "Get status", "pager")
   }
 
-  async action({
-    garden,
-    isWorkflowStepCommand,
-    log,
-    opts,
-  }: CommandParams): Promise<CommandResult<StatusCommandResult>> {
+  async action({ garden, log, opts }: CommandParams): Promise<CommandResult<StatusCommandResult>> {
     const actions = await garden.getActionRouter()
-    const graph = await garden.getConfigGraph({ log, emit: !isWorkflowStepCommand })
+    const graph = await garden.getConfigGraph({ log, emit: true })
 
     const envStatus = await garden.getEnvironmentStatus(log)
     const serviceStatuses = await actions.getServiceStatuses({ log, graph })

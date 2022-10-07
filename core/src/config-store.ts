@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -51,7 +51,7 @@ export abstract class ConfigStore<T extends object = any> {
     }
 
     for (const { keyPath, value } of entries) {
-      config = this.updateConfig(config, keyPath, value)
+      config = await this.updateConfig(config, keyPath, value)
     }
 
     await this.saveConfig(config)
@@ -99,7 +99,7 @@ export abstract class ConfigStore<T extends object = any> {
       await this.loadConfig()
     }
     // Spreading does not work on generic types, see: https://github.com/Microsoft/TypeScript/issues/13557
-    return Object.assign(this.config, {})
+    return <T>Object.assign(<T>this.config, {})
   }
 
   private updateConfig(config: T, keyPath: string[], value: ConfigValue): T {
@@ -230,12 +230,20 @@ export type AnalyticsGlobalConfig = {
   optedIn?: boolean
   firstRun?: boolean
   showOptInMessage?: boolean
+  cloudVersion?: number
+  cloudProfileEnabled?: boolean
 } & {
   [key: string]: any
 }
 
 export interface VersionCheckGlobalConfig {
   lastRun: Date
+}
+
+export interface RequirementsCheck {
+  lastRunDateUNIX?: number
+  lastRunGardenVersion?: string
+  passed?: boolean
 }
 
 export interface GlobalConfig {
@@ -251,6 +259,8 @@ const analyticsGlobalConfigSchema = () =>
       optedIn: joi.boolean().optional(),
       firstRun: joi.boolean().optional(),
       showOptInMessage: joi.boolean().optional(),
+      cloudVersion: joi.number().optional(),
+      cloudProfileEnabled: joi.boolean().optional(),
     })
     .unknown(true)
     .meta({ internal: true })
@@ -261,11 +271,24 @@ const versionCheckGlobalConfigSchema = () =>
     .keys({
       lastRun: joi.date().optional(),
     })
+    .unknown(true)
+    .meta({ internal: true })
+
+const requirementsCheckGlobalConfigSchema = () =>
+  joi
+    .object()
+    .keys({
+      lastRunDateUNIX: joi.number().optional(),
+      lastRunGardenVersion: joi.string().optional(),
+      passed: joi.bool().optional(),
+    })
+    .unknown(true)
     .meta({ internal: true })
 
 const globalConfigSchemaKeys = {
   analytics: analyticsGlobalConfigSchema(),
   lastVersionCheck: versionCheckGlobalConfigSchema(),
+  requirementsCheck: requirementsCheckGlobalConfigSchema(),
 }
 
 /* This contains a config key, key string pair to be used when setting/getting values in the store
@@ -282,7 +305,7 @@ export const globalConfigKeys = Object.keys(globalConfigSchemaKeys).reduce((acc,
   return acc
 }, {}) as { [K in keyof typeof globalConfigSchemaKeys]: K }
 
-const globalConfigSchema = () => joi.object().keys(globalConfigSchemaKeys).meta({ internal: true })
+const globalConfigSchema = () => joi.object().keys(globalConfigSchemaKeys).unknown(true).meta({ internal: true })
 
 export class GlobalConfigStore extends ConfigStore<GlobalConfig> {
   constructor() {

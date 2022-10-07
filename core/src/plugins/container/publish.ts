@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -16,7 +16,7 @@ export async function publishContainerModule({ ctx, module, log, tag }: PublishM
     return { published: false }
   }
 
-  const localId = containerHelpers.getLocalImageId(module, module.version)
+  const localId = module.outputs["local-image-id"]
   const remoteId = containerHelpers.getPublicImageId(module, tag)
 
   log.setState({ msg: `Publishing image ${remoteId}...` })

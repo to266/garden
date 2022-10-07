@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -13,9 +13,9 @@ import { isEqual } from "lodash"
 import { makeTestGardenA, TestGarden, enableAnalytics, getDataDir, makeTestGarden } from "../../../helpers"
 import { AnalyticsHandler } from "../../../../src/analytics/analytics"
 import { DEFAULT_API_VERSION } from "../../../../src/constants"
-import { isCI } from "ci-info"
 
 describe("AnalyticsHandler", () => {
+  const remoteOriginUrl = "git@github.com:garden-io/garden.git"
   const host = "https://api.segment.io"
   const scope = nock(host)
   // The sha512 hash of "test-project-a"
@@ -23,22 +23,14 @@ describe("AnalyticsHandler", () => {
     "95048f63dc14db38ed4138ffb6ff89992abdc19b8c899099c52a94f8fcc0390eec6480385cfa5014f84c0a14d4984825ce3bf25db1386d2b5382b936899df675"
   // The codenamize version + the sha512 hash of "test-project-a"
   const projectNameV2 = "discreet-sudden-struggle_95048f63dc14db38ed4138ffb6ff8999"
-  let remoteOriginUrl: string
   let analytics: AnalyticsHandler
   let garden: TestGarden
   let resetAnalyticsConfig: Function
 
-  before(async () => {
-    garden = await makeTestGardenA()
-    resetAnalyticsConfig = await enableAnalytics(garden)
-    // In CI we can make assumptions about the origin URL, otherwise not.
-    // We're hard coding it like this so that we can validate that we're actually
-    // hashing it properly.
-    remoteOriginUrl = isCI ? "git@github.com:garden-io/garden.git" : (await garden.vcs.getOriginName(garden.log))!
-  })
-
   beforeEach(async () => {
     garden = await makeTestGardenA()
+    garden.vcsInfo.originUrl = remoteOriginUrl
+    resetAnalyticsConfig = await enableAnalytics(garden)
   })
 
   afterEach(async () => {
@@ -72,6 +64,7 @@ describe("AnalyticsHandler", () => {
           enterpriseDomain: undefined,
           enterpriseDomainV2: undefined,
           isLoggedIn: false,
+          customer: undefined,
           ciName: analytics["ciName"],
           system: analytics["systemConfig"],
           isCI: analytics["isCI"],
@@ -79,7 +72,7 @@ describe("AnalyticsHandler", () => {
           projectMetadata: {
             modulesCount: 3,
             moduleTypes: ["test"],
-            tasksCount: 3,
+            tasksCount: 4,
             servicesCount: 3,
             testsCount: 5,
           },
@@ -121,6 +114,7 @@ describe("AnalyticsHandler", () => {
           enterpriseDomain: undefined,
           enterpriseDomainV2: undefined,
           isLoggedIn: false,
+          customer: undefined,
           ciName: analytics["ciName"],
           system: analytics["systemConfig"],
           isCI: analytics["isCI"],
@@ -140,6 +134,7 @@ describe("AnalyticsHandler", () => {
 
       const root = getDataDir("test-projects", "login", "has-domain-and-id")
       garden = await makeTestGarden(root)
+      garden.vcsInfo.originUrl = remoteOriginUrl
 
       analytics = await AnalyticsHandler.init(garden, garden.log)
 
@@ -158,6 +153,7 @@ describe("AnalyticsHandler", () => {
           enterpriseProjectId: analytics.hash("dummy-id"),
           enterpriseProjectIdV2: analytics.hashV2("dummy-id"),
           isLoggedIn: false,
+          customer: undefined,
           ciName: analytics["ciName"],
           system: analytics["systemConfig"],
           isCI: analytics["isCI"],
@@ -223,7 +219,7 @@ describe("AnalyticsHandler", () => {
         analytics.trackCommand("test-command-C")
         await analytics.flush()
 
-        expect(scope.done()).to.not.throw
+        expect(scope.isDone()).to.equal(true)
       })
     })
     context("firstRun=true", () => {
@@ -265,7 +261,7 @@ describe("AnalyticsHandler", () => {
         analytics.trackCommand("test-command-C")
         await analytics.flush()
 
-        expect(scope.done()).to.not.throw
+        expect(scope.isDone()).to.equal(true)
       })
     })
     it("should wait for pending events on network delays", async () => {
@@ -290,7 +286,7 @@ describe("AnalyticsHandler", () => {
       await analytics.flush()
 
       expect(analytics["pendingEvents"].size).to.eql(0)
-      expect(scope.done()).to.not.throw
+      expect(scope.isDone()).to.equal(true)
     })
     it("should eventually timeout waiting for pending events on network delays", async () => {
       scope
@@ -335,7 +331,8 @@ describe("AnalyticsHandler", () => {
       expect(pendingEvents).to.eql([
         {
           event: "Run Command",
-          userId: pendingEvents[0].userId,
+          anonymousId: pendingEvents[0].anonymousId,
+          userId: undefined,
           properties: {
             name: "test-command-A",
             projectId: analytics["projectId"],
@@ -347,6 +344,7 @@ describe("AnalyticsHandler", () => {
             enterpriseDomain: undefined,
             enterpriseDomainV2: undefined,
             isLoggedIn: false,
+            customer: undefined,
             ciName: analytics["ciName"],
             system: analytics["systemConfig"],
             isCI: analytics["isCI"],
@@ -354,14 +352,59 @@ describe("AnalyticsHandler", () => {
             projectMetadata: {
               modulesCount: 3,
               moduleTypes: ["test"],
-              tasksCount: 3,
+              tasksCount: 4,
               servicesCount: 3,
               testsCount: 5,
             },
           },
         },
       ])
-      expect(scope.done()).to.not.throw
-    })
+      expect(scope.isDone()).to.equal(true)
+    }),
+      context("cloudVersion", () => {
+        it("should identify user with cloud version undefined", async () => {
+          scope
+            .post(`/v1/batch`, (body) => {
+              const events = body.batch.map((event) => event.type)
+              // Assert that the event batch contains a single "identify" event
+              return isEqual(events, ["identify"])
+            })
+            .reply(200)
+            .post(`/v1/batch`, (body) => {
+              // Assert that the event batch contains the "track" events
+              return isEqual(getEvents(body), [
+                {
+                  event: "Run Command",
+                  type: "track",
+                  name: "test-command-A",
+                },
+                {
+                  event: "Run Command",
+                  type: "track",
+                  name: "test-command-B",
+                },
+                {
+                  event: "Run Command",
+                  type: "track",
+                  name: "test-command-C",
+                },
+              ])
+            })
+            .reply(200)
+
+          await garden.globalConfigStore.set(["analytics", "firstRun"], false)
+          // ensure the cloud version is not in the config
+          await garden.globalConfigStore.delete(["analytics", "cloudVersion"])
+
+          analytics = await AnalyticsHandler.init(garden, garden.log)
+
+          analytics.trackCommand("test-command-A")
+          analytics.trackCommand("test-command-B")
+          analytics.trackCommand("test-command-C")
+          await analytics.flush()
+
+          expect(scope.isDone()).to.equal(true)
+        })
+      })
   })
 })

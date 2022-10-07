@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,11 +8,11 @@
 
 import logSymbols from "log-symbols"
 import nodeEmoji from "node-emoji"
-import { cloneDeep, merge, round } from "lodash"
+import { cloneDeep, round } from "lodash"
 
-import { LogLevel, LogNode } from "./logger"
+import { LogLevel, logLevelMap, LogNode } from "./logger"
 import { Omit } from "../util/util"
-import { getChildEntries, findParentEntry } from "./util"
+import { getChildEntries, findParentEntry, getAllSections } from "./util"
 import { GardenError } from "../exceptions"
 import { CreateNodeParams, Logger, PlaceholderOpts } from "./logger"
 import uniqid from "uniqid"
@@ -213,7 +213,7 @@ export class LogEntry implements LogNode {
 
     let metadata: LogEntryMetadata | undefined = undefined
     if (this.metadata || params.metadata) {
-      metadata = merge(cloneDeep(this.metadata || {}), params.metadata || {})
+      metadata = { ...cloneDeep(this.metadata || {}), ...(params.metadata || {}) }
     }
 
     return new LogEntry({
@@ -357,6 +357,21 @@ export class LogEntry implements LogNode {
 
   getChildEntries() {
     return getChildEntries(this)
+  }
+
+  /**
+   * Get the log level of the entry as a string.
+   */
+  getStringLevel(): string {
+    return logLevelMap[this.level]
+  }
+
+  /**
+   * Get the full list of sections including all parent entries.
+   */
+  getAllSections(): string[] {
+    const msg = this.getLatestMessage()
+    return msg ? getAllSections(this, msg) : []
   }
 
   /**

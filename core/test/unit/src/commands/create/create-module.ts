@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -28,7 +28,7 @@ describe("CreateModuleCommand", () => {
 
   beforeEach(async () => {
     tmp = await makeTempDir()
-    await exec("git", ["init"], { cwd: tmp.path })
+    await exec("git", ["init", "--initial-branch=main"], { cwd: tmp.path })
     garden = await makeDummyGarden(tmp.path, { commandInfo: { name: "create module", args: {}, opts: {} } })
   })
 
@@ -48,10 +48,11 @@ describe("CreateModuleCommand", () => {
       args: {},
       opts: withDefaultGlobalOpts({
         dir,
-        interactive: false,
-        name: undefined,
-        type: "exec",
-        filename: defaultConfigFilename,
+        "interactive": false,
+        "name": undefined,
+        "type": "exec",
+        "filename": defaultConfigFilename,
+        "skip-comments": false,
       }),
     })
     const { name, configPath } = result!
@@ -79,11 +80,12 @@ describe("CreateModuleCommand", () => {
       log: garden.log,
       args: {},
       opts: withDefaultGlobalOpts({
-        dir: tmp.path,
-        interactive: false,
-        name: "test",
-        type: "exec",
-        filename: "custom.garden.yml",
+        "dir": tmp.path,
+        "interactive": false,
+        "name": "test",
+        "type": "exec",
+        "filename": "custom.garden.yml",
+        "skip-comments": false,
       }),
     })
     const { configPath } = result!
@@ -100,11 +102,12 @@ describe("CreateModuleCommand", () => {
       log: garden.log,
       args: {},
       opts: withDefaultGlobalOpts({
-        dir: tmp.path,
-        interactive: false,
-        name: "test",
-        type: "exec",
-        filename: defaultConfigFilename,
+        "dir": tmp.path,
+        "interactive": false,
+        "name": "test",
+        "type": "exec",
+        "filename": defaultConfigFilename,
+        "skip-comments": false,
       }),
     })
     const { name, configPath } = result!
@@ -135,11 +138,12 @@ describe("CreateModuleCommand", () => {
       log: garden.log,
       args: {},
       opts: withDefaultGlobalOpts({
-        dir: tmp.path,
-        interactive: false,
-        name: "test",
-        type: "exec",
-        filename: defaultConfigFilename,
+        "dir": tmp.path,
+        "interactive": false,
+        "name": "test",
+        "type": "exec",
+        "filename": defaultConfigFilename,
+        "skip-comments": false,
       }),
     })
     const { name, configPath } = result!
@@ -173,11 +177,12 @@ describe("CreateModuleCommand", () => {
           log: garden.log,
           args: {},
           opts: withDefaultGlobalOpts({
-            dir: tmp.path,
-            interactive: false,
-            name: "test",
-            type: "exec",
-            filename: defaultConfigFilename,
+            "dir": tmp.path,
+            "interactive": false,
+            "name": "test",
+            "type": "exec",
+            "filename": defaultConfigFilename,
+            "skip-comments": false,
           }),
         }),
       (err) => expect(stripAnsi(err.message)).to.equal("A Garden module named test already exists in " + configPath)
@@ -196,10 +201,11 @@ describe("CreateModuleCommand", () => {
           args: {},
           opts: withDefaultGlobalOpts({
             dir,
-            interactive: false,
-            name: "test",
-            type: "exec",
-            filename: defaultConfigFilename,
+            "interactive": false,
+            "name": "test",
+            "type": "exec",
+            "filename": defaultConfigFilename,
+            "skip-comments": false,
           }),
         }),
       (err) => expect(err.message).to.equal(`Path ${dir} does not exist`)
@@ -216,11 +222,12 @@ describe("CreateModuleCommand", () => {
           log: garden.log,
           args: {},
           opts: withDefaultGlobalOpts({
-            dir: tmp.path,
-            interactive: false,
-            name: undefined,
-            type: "foo",
-            filename: defaultConfigFilename,
+            "dir": tmp.path,
+            "interactive": false,
+            "name": undefined,
+            "type": "foo",
+            "filename": defaultConfigFilename,
+            "skip-comments": false,
           }),
         }),
       (err) => expect(stripAnsi(err.message)).to.equal("Could not find module type foo")
@@ -228,7 +235,7 @@ describe("CreateModuleCommand", () => {
   })
 
   describe("getModuleTypeSuggestions", () => {
-    const moduleTypes = getModuleTypes(getSupportedPlugins().map((f) => f()))
+    const moduleTypes = getModuleTypes(getSupportedPlugins().map((f) => f.callback()))
 
     it("should return a list of all supported module types", async () => {
       const result = await getModuleTypeSuggestions(garden.log, moduleTypes, tmp.path, "test")
@@ -262,11 +269,6 @@ describe("CreateModuleCommand", () => {
           name: "helm (based on found Chart.yaml, suggested by kubernetes)",
           short: "helm",
           value: { type: "helm", name: "test", chartPath: "." },
-        },
-        {
-          name: "terraform (based on found .tf files, suggested by terraform)",
-          short: "terraform",
-          value: { type: "terraform", name: "test", autoApply: false },
         },
         new inquirer.Separator(),
         ...Object.keys(moduleTypes).map((type) => ({ name: type, value: { kind: "Module", type, name: "test" } })),

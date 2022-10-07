@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -15,12 +15,18 @@ import { BaseTask } from "./tasks/base"
 import { GraphResults } from "./task-graph"
 import { isModuleLinked } from "./util/ext-source-util"
 import { Garden } from "./garden"
-import { LogEntry } from "./logger/log-entry"
+import { EmojiName, LogEntry } from "./logger/log-entry"
 import { ConfigGraph } from "./config-graph"
-import { dedent } from "./util/string"
+import { dedent, naturalList } from "./util/string"
 import { ConfigurationError } from "./exceptions"
 import { uniqByName } from "./util/util"
-import { printEmoji, renderDivider } from "./logger/util"
+import { renderDivider } from "./logger/util"
+import { Events } from "./events"
+import { BuildTask } from "./tasks/build"
+import { DeployTask } from "./tasks/deploy"
+import { filterTestConfigs, TestTask } from "./tasks/test"
+import { testFromConfig } from "./types/test"
+import { TaskTask } from "./tasks/task"
 
 export type ProcessHandler = (graph: ConfigGraph, module: GardenModule) => Promise<BaseTask[]>
 
@@ -30,8 +36,18 @@ interface ProcessParams {
   log: LogEntry
   footerLog?: LogEntry
   watch: boolean
+  /**
+   * If provided, and if `watch === true`, will log this to the statusline when waiting for changes
+   */
+  overRideWatchStatusLine?: string
+  /**
+   * If provided, and if `watch === true`, don't watch files in the module roots of these modules.
+   */
+  skipWatchModules?: GardenModule[]
   initialTasks: BaseTask[]
-  // use this if the behavior should be different on watcher changes than on initial processing
+  /**
+   * Use this if the behavior should be different on watcher changes than on initial processing
+   */
   changeHandler: ProcessHandler
 }
 
@@ -44,6 +60,8 @@ export interface ProcessResults {
   restartRequired?: boolean
 }
 
+let statusLine: LogEntry
+
 export async function processModules({
   garden,
   graph,
@@ -51,8 +69,10 @@ export async function processModules({
   footerLog,
   modules,
   initialTasks,
+  skipWatchModules,
   watch,
   changeHandler,
+  overRideWatchStatusLine,
 }: ProcessModulesParams): Promise<ProcessResults> {
   log.silly("Starting processModules")
 
@@ -64,24 +84,48 @@ export async function processModules({
 
   if (linkedModulesMsg.length > 0) {
     log.info(renderDivider())
-    log.info(chalk.gray(`Following modules are linked to a local path:\n${linkedModulesMsg.join("\n")}`))
+    log.info(chalk.gray(`The following modules are linked to a local path:\n${linkedModulesMsg.join("\n")}`))
     log.info(renderDivider())
   }
 
-  let statusLine: LogEntry
+  // true if one or more tasks failed when the task graph last finished processing all its nodes.
+  let taskErrorDuringLastProcess = false
 
   if (watch && !!footerLog) {
-    statusLine = footerLog.info("").placeholder()
+    if (!statusLine) {
+      statusLine = footerLog.info("").placeholder()
+    }
 
     garden.events.on("taskGraphProcessing", () => {
-      const emoji = printEmoji("hourglass_flowing_sand", statusLine)
-      statusLine.setState(`${emoji} Processing...`)
+      taskErrorDuringLastProcess = false
+      statusLine.setState({ emoji: "hourglass_flowing_sand", msg: "Processing..." })
     })
   }
 
   const results = await garden.processTasks(initialTasks)
 
-  if (!watch) {
+  if (!watch && !garden.persistent) {
+    return {
+      taskResults: results,
+      restartRequired: false,
+    }
+  }
+
+  if (!watch && garden.persistent) {
+    // Garden process is persistent but not in watch mode. E.g. used to
+    // keep port forwards alive without enabling watch or dev mode.
+    await new Promise((resolve) => {
+      garden.events.on("_restart", () => {
+        log.debug({ symbol: "info", msg: `Manual restart triggered` })
+        resolve({})
+      })
+
+      garden.events.on("_exit", () => {
+        log.debug({ symbol: "info", msg: `Manual exit triggered` })
+        restartRequired = false
+        resolve({})
+      })
+    })
     return {
       taskResults: results,
       restartRequired: false,
@@ -96,11 +140,23 @@ export async function processModules({
   const modulesToWatch = uniqByName(deps.build.concat(modules))
   const modulesByName = keyBy(modulesToWatch, "name")
 
-  await garden.startWatcher(graph)
+  await garden.startWatcher({ graph, skipModules: skipWatchModules })
+
+  const taskError = () => {
+    if (!!statusLine) {
+      statusLine.setState({
+        emoji: "heavy_exclamation_mark",
+        msg: chalk.red("One or more actions failed, see the log output above for details."),
+      })
+    }
+  }
 
   const waiting = () => {
     if (!!statusLine) {
-      statusLine.setState({ emoji: "clock2", msg: chalk.gray("Waiting for code changes...") })
+      statusLine.setState({
+        emoji: "clock2",
+        msg: chalk.gray(overRideWatchStatusLine || "Waiting for code changes..."),
+      })
     }
 
     garden.events.emit("watchingForChanges", {})
@@ -109,8 +165,15 @@ export async function processModules({
   let restartRequired = true
 
   await new Promise((resolve) => {
+    garden.events.on("taskError", () => {
+      taskErrorDuringLastProcess = true
+      taskError()
+    })
+
     garden.events.on("taskGraphComplete", () => {
-      waiting()
+      if (!taskErrorDuringLastProcess) {
+        waiting()
+      }
     })
 
     garden.events.on("_restart", () => {
@@ -187,6 +250,88 @@ export async function processModules({
       await garden.processTasks(moduleTasks)
     })
 
+    garden.events.on("buildRequested", async (event: Events["buildRequested"]) => {
+      log.info("")
+      log.info({
+        emoji: "hammer",
+        msg: chalk.white(`Build requested for ${chalk.italic(chalk.cyan(event.moduleName))}`),
+      })
+
+      try {
+        garden.clearCaches()
+        graph = await garden.getConfigGraph({ log, emit: false })
+        const tasks = await cloudEventHandlers.buildRequested({ log, request: event, graph, garden })
+        await garden.processTasks(tasks)
+      } catch (err) {
+        log.error(err.message)
+      }
+    })
+    garden.events.on("deployRequested", async (event: Events["deployRequested"]) => {
+      let prefix: string
+      let emoji: EmojiName
+      if (event.hotReload) {
+        emoji = "fire"
+        prefix = `Hot reload-enabled deployment`
+      } else {
+        // local mode always takes precedence over dev mode
+        if (event.localMode) {
+          emoji = "left_right_arrow"
+          prefix = `Local-mode deployment`
+        } else if (event.devMode) {
+          emoji = "zap"
+          prefix = `Dev-mode deployment`
+        } else {
+          emoji = "rocket"
+          prefix = "Deployment"
+        }
+      }
+      const msg = `${prefix} requested for ${chalk.italic(chalk.cyan(event.serviceName))}`
+      log.info("")
+      log.info({ emoji, msg: chalk.white(msg) })
+
+      try {
+        garden.clearCaches()
+        graph = await garden.getConfigGraph({ log, emit: false })
+        const deployTask = await cloudEventHandlers.deployRequested({ log, request: event, graph, garden })
+        await garden.processTasks([deployTask])
+      } catch (err) {
+        log.error(err.message)
+      }
+    })
+    garden.events.on("testRequested", async (event: Events["testRequested"]) => {
+      const testNames = event.testNames
+      let suffix = ""
+      if (testNames) {
+        suffix = ` (only ${chalk.italic(chalk.cyan(naturalList(testNames)))})`
+      }
+      const msg = chalk.white(`Tests requested for ${chalk.italic(chalk.cyan(event.moduleName))}${suffix}`)
+      log.info("")
+      log.info({ emoji: "thermometer", msg })
+
+      try {
+        garden.clearCaches()
+        graph = await garden.getConfigGraph({ log, emit: false })
+        const testTasks = await cloudEventHandlers.testRequested({ log, request: event, graph, garden })
+        await garden.processTasks(testTasks)
+      } catch (err) {
+        log.error(err.message)
+      }
+    })
+    garden.events.on("taskRequested", async (event: Events["taskRequested"]) => {
+      const msg = chalk.white(`Run requested for task ${chalk.italic(chalk.cyan(event.taskName))}`)
+      log.info("")
+      log.info({ emoji: "runner", msg })
+
+      try {
+        garden.clearCaches()
+        graph = await garden.getConfigGraph({ log, emit: false })
+        const taskTask = await cloudEventHandlers.taskRequested({ log, request: event, graph, garden })
+        await garden.processTasks([taskTask])
+      } catch (err) {
+        log.error(err.message)
+      }
+    })
+
     waiting()
   })
 
@@ -194,6 +339,82 @@ export async function processModules({
     taskResults: {}, // TODO: Return latest results for each task key processed between restarts?
     restartRequired,
   }
+}
+
+export interface CloudEventHandlerCommonParams {
+  garden: Garden
+  graph: ConfigGraph
+  log: LogEntry
+}
+
+/*
+ * TODO: initialize devModeServiceNames/hotReloadServiceNames/localModeServiceNames
+ *       depending on the corresponding deployment flags. See class DeployCommand for details.
+ */
+export const cloudEventHandlers = {
+  buildRequested: async (params: CloudEventHandlerCommonParams & { request: Events["buildRequested"] }) => {
+    const { garden, graph, log } = params
+    const { moduleName, force } = params.request
+    const tasks = await BuildTask.factory({
+      garden,
+      log,
+      graph,
+      module: graph.getModule(moduleName),
+      force,
+    })
+    return tasks
+  },
+  testRequested: async (params: CloudEventHandlerCommonParams & { request: Events["testRequested"] }) => {
+    const { garden, graph, log } = params
+    const { moduleName, testNames, force, forceBuild } = params.request
+    const module = graph.getModule(moduleName)
+    return filterTestConfigs(module.testConfigs, testNames).map((config) => {
+      return new TestTask({
+        garden,
+        graph,
+        log,
+        force,
+        forceBuild,
+        test: testFromConfig(module, config, graph),
+        skipRuntimeDependencies: params.request.skipDependencies,
+        devModeServiceNames: [],
+        hotReloadServiceNames: [],
+        localModeServiceNames: [],
+      })
+    })
+  },
+  deployRequested: async (params: CloudEventHandlerCommonParams & { request: Events["deployRequested"] }) => {
+    const { garden, graph, log } = params
+    const { serviceName, force, forceBuild } = params.request
+    return new DeployTask({
+      garden,
+      log,
+      graph,
+      service: graph.getService(serviceName),
+      force,
+      forceBuild,
+      fromWatch: true,
+      skipRuntimeDependencies: params.request.skipDependencies,
+      devModeServiceNames: [],
+      hotReloadServiceNames: [],
+      localModeServiceNames: [],
+    })
+  },
+  taskRequested: async (params: CloudEventHandlerCommonParams & { request: Events["taskRequested"] }) => {
+    const { garden, graph, log } = params
+    const { taskName, force, forceBuild } = params.request
+    return new TaskTask({
+      garden,
+      log,
+      graph,
+      task: graph.getTask(taskName),
+      devModeServiceNames: [],
+      hotReloadServiceNames: [],
+      localModeServiceNames: [],
+      force,
+      forceBuild,
+    })
+  },
 }
 
 /**

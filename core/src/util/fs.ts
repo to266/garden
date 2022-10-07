@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -21,9 +21,10 @@ import { LogEntry } from "../logger/log-entry"
 import { ModuleConfig } from "../config/module"
 import pathIsInside from "path-is-inside"
 import { uuidv4, exec } from "./util"
-import micromatch from "micromatch"
+import type Micromatch from "micromatch"
 
 export const defaultConfigFilename = "garden.yml"
+export const configFilenamePattern = "*garden.y*ml"
 const metadataFilename = "metadata.json"
 export const defaultDotIgnoreFiles = [".gardenignore"]
 export const fixedProjectExcludes = [".git", ".gitmodules", ".garden/**/*", "debug-info*/**"]
@@ -82,12 +83,15 @@ export function detectModuleOverlap({
   gardenDirPath: string
   moduleConfigs: ModuleConfig[]
 }): ModuleOverlap[] {
+  // Don't consider overlap between disabled modules, or where one of the modules is disabled
+  const enabledModules = moduleConfigs.filter((m) => !m.disabled)
+
   let overlaps: ModuleOverlap[] = []
-  for (const config of moduleConfigs) {
+  for (const config of enabledModules) {
     if (!!config.include || !!config.exclude) {
       continue
     }
-    const matches = moduleConfigs
+    const matches = enabledModules
       .filter(
         (compare) =>
           config.name !== compare.name &&
@@ -159,13 +163,13 @@ export async function findConfigPathsInPath({
       if (last === "**" || last === "*") {
         // Swap out a general wildcard on the last path segment with one that will specifically match Garden configs,
         // to optimize the scan.
-        return split.slice(0, -1).concat(["*garden.y*ml"]).join(posix.sep)
+        return split.slice(0, -1).concat([configFilenamePattern]).join(posix.sep)
       } else {
         return path
       }
     })
   } else {
-    include = ["**/*garden.y*ml"]
+    include = ["**/" + configFilenamePattern]
   }
 
   const paths = await vcs.getFiles({
@@ -230,11 +234,21 @@ export async function listDirectory(path: string, { recursive = true } = {}): Pr
   })
 }
 
+let _micromatch: typeof Micromatch
+
+function micromatch() {
+  if (!_micromatch) {
+    // Note: lazy-loading for startup performance
+    _micromatch = require("micromatch").match
+  }
+  return _micromatch
+}
+
 /**
  * Given a list of `paths`, return a list of paths that match any of the given `patterns`
  */
 export function matchGlobs(paths: string[], patterns: string[]): string[] {
-  return micromatch(paths, patterns, { dot: true })
+  return micromatch()(paths, patterns, { dot: true })
 }
 
 /**
@@ -300,7 +314,7 @@ export async function makeTempDir({ git = false }: { git?: boolean } = {}): Prom
   tmpDir.path = await realpath(tmpDir.path)
 
   if (git) {
-    await exec("git", ["init"], { cwd: tmpDir.path })
+    await exec("git", ["init", "--initial-branch=main"], { cwd: tmpDir.path })
     await writeFile(join(tmpDir.path, "foo"), "bar")
     await exec("git", ["add", "."], { cwd: tmpDir.path })
     await exec("git", ["commit", "-m", "first commit"], { cwd: tmpDir.path })

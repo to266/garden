@@ -1,15 +1,14 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { isPlainObject, flatten } from "lodash"
+import { cloneDeep, flatten, isPlainObject } from "lodash"
 import { join, resolve } from "path"
-import { pathExists, writeFile, remove, readFile } from "fs-extra"
-import cryptoRandomString = require("crypto-random-string")
+import { pathExists, readFile, remove, writeFile } from "fs-extra"
 import { apply as jsonMerge } from "json-merge-patch"
 
 import { PluginContext } from "../../../plugin-context"
@@ -22,11 +21,12 @@ import { HelmModule, HelmModuleConfig } from "./config"
 import { ConfigurationError, PluginError } from "../../../exceptions"
 import { GardenModule } from "../../../types/module"
 import { deline, tailString } from "../../../util/string"
-import { getAnnotation, flattenResources } from "../util"
+import { flattenResources, getAnnotation } from "../util"
 import { KubernetesPluginContext } from "../config"
 import { RunResult } from "../../../types/plugin/base"
 import { MAX_RUN_RESULT_LOG_LENGTH } from "../constants"
 import { dumpYaml } from "../../../util/util"
+import cryptoRandomString = require("crypto-random-string")
 
 const gardenValuesFilename = "garden-values.yml"
 
@@ -69,46 +69,63 @@ interface GetChartResourcesParams {
   module: GardenModule
   devMode: boolean
   hotReload: boolean
+  localMode: boolean
   log: LogEntry
   version: string
+}
+
+type PrepareManifestsParams = GetChartResourcesParams & {
+  namespace: string
+  releaseName: string
+  chartPath: string
 }
 
 /**
  * Render the template in the specified Helm module (locally), and return all the resources in the chart.
  */
 export async function getChartResources(params: GetChartResourcesParams) {
-  const objects = <KubernetesResource[]>loadTemplate(await renderTemplates(params))
-
-  const resources = objects.filter((obj) => {
-    // Don't try to check status of hooks
-    const helmHook = getAnnotation(obj, "helm.sh/hook")
-    if (helmHook) {
-      return false
-    }
-
-    // Ephemeral objects should also not be checked
-    if (obj.kind === "Pod" || obj.kind === "Job") {
-      return false
-    }
-
-    return true
-  })
-
-  return flattenResources(resources)
+  return filterManifests(await renderTemplates(params))
 }
 
 /**
  * Renders the given Helm module and returns a multi-document YAML string.
  */
-export async function renderTemplates({ ctx, module, devMode, hotReload, log, version }: GetChartResourcesParams) {
+export async function renderTemplates(params: GetChartResourcesParams): Promise<string> {
+  const { ctx, module, devMode, hotReload, localMode, version, log } = params
+  const { namespace, releaseName, chartPath } = await prepareTemplates(params)
+
   log.debug("Preparing chart...")
 
+  return await prepareManifests({
+    ctx,
+    module,
+    devMode,
+    hotReload,
+    localMode,
+    version,
+    log,
+    namespace,
+    releaseName,
+    chartPath,
+  })
+}
+
+export async function prepareTemplates({
+  ctx,
+  module,
+  log,
+  version,
+}: GetChartResourcesParams): Promise<{ namespace: string; releaseName: string; chartPath: string }> {
   const chartPath = await getChartPath(module)
 
   // create the values.yml file (merge the configured parameters into the default values)
   // Merge with the base module's values, if applicable
+  let specValues = module.spec.values || {}
+
   const baseModule = getBaseModule(module)
-  const specValues = baseModule ? jsonMerge(baseModule.spec.values, module.spec.values) : module.spec.values
+  if (baseModule) {
+    specValues = jsonMerge(cloneDeep(baseModule.spec.values), specValues)
+  }
 
   // Add Garden metadata
   specValues[".garden"] = {
@@ -141,7 +158,11 @@ export async function renderTemplates({ ctx, module, devMode, hotReload, log, ve
       await dependencyUpdate(ctx, log, namespace, chartPath)
     }
   }
+  return { namespace, releaseName, chartPath }
+}
 
+export async function prepareManifests(params: PrepareManifestsParams): Promise<string> {
+  const { ctx, module, devMode, hotReload, localMode, log, namespace, releaseName, chartPath } = params
   const res = await helm({
     ctx,
     log,
@@ -158,12 +179,33 @@ export async function renderTemplates({ ctx, module, devMode, hotReload, log, ve
       "json",
       "--timeout",
       module.spec.timeout.toString(10) + "s",
-      ...(await getValueArgs(module, devMode, hotReload)),
+      ...(await getValueArgs(module, devMode, hotReload, localMode)),
     ],
   })
 
   const manifest = JSON.parse(res).manifest as string
   return manifest
+}
+
+export async function filterManifests(renderedTemplates: string) {
+  const objects = <KubernetesResource[]>loadTemplate(renderedTemplates)
+
+  const resources = objects.filter((obj) => {
+    // Don't try to check status of hooks
+    const helmHook = getAnnotation(obj, "helm.sh/hook")
+    if (helmHook) {
+      return false
+    }
+
+    // Ephemeral objects should also not be checked
+    if (obj.kind === "Pod" || obj.kind === "Job") {
+      return false
+    }
+
+    return true
+  })
+
+  return flattenResources(resources)
 }
 
 /**
@@ -224,7 +266,7 @@ export function getGardenValuesPath(chartPath: string) {
 /**
  * Get the value files arguments that should be applied to any helm install/render command.
  */
-export async function getValueArgs(module: HelmModule, devMode: boolean, hotReload: boolean) {
+export async function getValueArgs(module: HelmModule, devMode: boolean, hotReload: boolean, localMode: boolean) {
   const chartPath = await getChartPath(module)
   const gardenValuesPath = getGardenValuesPath(chartPath)
 
@@ -234,11 +276,16 @@ export async function getValueArgs(module: HelmModule, devMode: boolean, hotRelo
 
   const args = flatten(valueFiles.map((f) => ["--values", f]))
 
-  if (devMode) {
-    args.push("--set", "\\.garden.devMode=true")
-  }
-  if (hotReload) {
-    args.push("--set", "\\.garden.hotReload=true")
+  // Local mode always takes precedence over dev mode
+  if (localMode) {
+    args.push("--set", "\\.garden.localMode=true")
+  } else {
+    if (devMode) {
+      args.push("--set", "\\.garden.devMode=true")
+    }
+    if (hotReload) {
+      args.push("--set", "\\.garden.hotReload=true")
+    }
   }
 
   return args
@@ -289,7 +336,7 @@ export async function renderHelmTemplateString(
           "--namespace",
           namespace,
           "--dependency-update",
-          ...(await getValueArgs(module, false, false)),
+          ...(await getValueArgs(module, false, false, false)),
           "--show-only",
           relPath,
           chartPath,
@@ -313,7 +360,7 @@ export async function renderHelmTemplateString(
  * `loadAll` in this context: https://github.com/kubeapps/kubeapps/issues/636.
  */
 export function loadTemplate(template: string) {
-  return loadAll(template, undefined, { json: true })
+  return loadAll(template || "", undefined, { json: true })
     .filter((obj) => obj !== null)
     .map((obj) => {
       if (isPlainObject(obj)) {

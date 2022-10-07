@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -23,12 +23,12 @@ import { GardenModule } from "../../../types/module"
 import { getBaseModule } from "../helm/common"
 import { HelmModule, HelmService } from "../helm/config"
 import { KubernetesModule, KubernetesService } from "../kubernetes-module/config"
-import { HotReloadableKind, HotReloadableResource } from "./hot-reload"
+import { SyncableKind, SyncableResource } from "./hot-reload"
 import Bluebird from "bluebird"
 import normalizePath from "normalize-path"
 
 interface ConfigureHotReloadParams {
-  target: HotReloadableResource
+  target: SyncableResource
   hotReloadSpec: ContainerHotReloadSpec
   hotReloadCommand?: string[]
   hotReloadArgs?: string[]
@@ -48,7 +48,7 @@ export function configureHotReload({
   hotReloadArgs,
   containerName,
 }: ConfigureHotReloadParams): void {
-  const kind = <HotReloadableKind>target.kind
+  const kind = <SyncableKind>target.kind
   set(target, ["metadata", "annotations", gardenAnnotationKey("hot-reload")], "true")
   const mainContainer = getResourceContainer(target, containerName)
 
@@ -275,7 +275,7 @@ interface SyncToServiceParams {
   service: GardenService
   hotReloadSpec: ContainerHotReloadSpec
   namespace: string
-  workload: HotReloadableResource
+  workload: SyncableResource
   log: LogEntry
 }
 

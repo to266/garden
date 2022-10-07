@@ -1,20 +1,19 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { platform } from "os"
+import split2 from "split2"
 import { pathExists, createWriteStream, ensureDir, chmod, remove, move, createReadStream } from "fs-extra"
-import { ConfigurationError, ParameterError, GardenBaseError } from "../exceptions"
+import { ConfigurationError, ParameterError, GardenBaseError, RuntimeError } from "../exceptions"
 import { join, dirname, basename, posix } from "path"
-import { hashString, exec, uuidv4, getPlatform, getArchitecture } from "./util"
+import { hashString, exec, uuidv4, getPlatform, getArchitecture, isDarwinARM } from "./util"
 import tar from "tar"
 import { GARDEN_GLOBAL_PATH } from "../constants"
 import { LogEntry } from "../logger/log-entry"
-import { Extract } from "unzipper"
 import { createHash } from "crypto"
 import crossSpawn from "cross-spawn"
 import { spawn } from "./util"
@@ -22,9 +21,11 @@ import { Writable } from "stream"
 import got from "got/dist/source"
 import { PluginToolSpec, ToolBuildSpec } from "../types/plugin/tools"
 import { parse } from "url"
-const AsyncLock = require("async-lock")
+import AsyncLock from "async-lock"
+import { PluginContext } from "../plugin-context"
 
 const toolsPath = join(GARDEN_GLOBAL_PATH, "tools")
+const lock = new AsyncLock()
 
 export class DownloadError extends GardenBaseError {
   type = "download"
@@ -70,7 +71,7 @@ export class CliWrapper {
       cwd = dirname(path)
     }
 
-    log.debug(`Execing '${path} ${args.join(" ")}' in ${cwd}`)
+    log.silly(`Execing '${path} ${args.join(" ")}' in ${cwd}`)
 
     return exec(path, args, {
       cwd,
@@ -115,6 +116,67 @@ export class CliWrapper {
     return crossSpawn(path, args, { cwd, env, windowsHide: true })
   }
 
+  /**
+   * Helper for using spawn with live log streaming. Waits for the command to finish before returning.
+   *
+   * If an error occurs and no output has been written to stderr, we use stdout for the error message instead.
+   */
+  async spawnAndStreamLogs({
+    args,
+    cwd,
+    env,
+    log,
+    ctx,
+    errorPrefix,
+  }: SpawnParams & { errorPrefix: string; ctx: PluginContext; statusLine?: LogEntry }) {
+    const proc = await this.spawn({ args, cwd, env, log })
+
+    const logStream = split2()
+
+    let stdout: string = ""
+    let stderr: string = ""
+
+    if (proc.stderr) {
+      proc.stderr.pipe(logStream)
+      proc.stderr.on("data", (data) => {
+        stderr += data
+      })
+    }
+
+    if (proc.stdout) {
+      proc.stdout.pipe(logStream)
+      proc.stdout.on("data", (data) => {
+        stdout += data
+      })
+    }
+
+    logStream.on("data", (line: Buffer) => {
+      ctx.events.emit("log", { timestamp: new Date().getTime(), data: line })
+      const lineStr = line.toString()
+      log.verbose(lineStr)
+    })
+
+    await new Promise<void>((resolve, reject) => {
+      proc.on("error", reject)
+      proc.on("close", (code) => {
+        if (code === 0) {
+          resolve()
+        } else {
+          // Some commands (e.g. the pulumi CLI) don't log anything to stderr when an error occurs. To handle that,
+          // we use `stdout` for the error output instead (in case information relevant to the user is included there).
+          const errOutput = stderr.length > 0 ? stderr : stdout
+          reject(
+            new RuntimeError(`${errorPrefix}:\n${errOutput}`, {
+              stdout,
+              stderr,
+              code,
+            })
+          )
+        }
+      })
+    })
+  }
+
   async spawnAndWait({ args, cwd, env, log, ignoreError, rawMode, stdout, stderr, timeoutSec, tty }: SpawnParams) {
     const path = await this.getPath(log)
 
@@ -139,9 +201,8 @@ export class CliWrapper {
   }
 }
 
-interface PluginToolOpts {
-  platform?: string
-  architecture?: string
+const findBuildSpec = (spec: PluginToolSpec, plat: string, arch: string) => {
+  return spec.builds.find((build) => build.platform === plat && build.architecture === arch)
 }
 
 export interface PluginTools {
@@ -161,32 +222,40 @@ export class PluginTool extends CliWrapper {
   spec: PluginToolSpec
   buildSpec: ToolBuildSpec
 
-  private lock: any
   private versionDirname: string
   protected versionPath: string
   protected targetSubpath: string
   private chmodDone: boolean
 
-  constructor(spec: PluginToolSpec, opts: PluginToolOpts = {}) {
+  constructor(spec: PluginToolSpec) {
     super(spec.name, "")
 
-    const _platform = opts.platform || getPlatform()
-    const architecture = opts.architecture || getArchitecture()
+    const platform = getPlatform()
+    const architecture = getArchitecture()
+    const darwinARM = isDarwinARM()
 
-    this.buildSpec = spec.builds.find((build) => build.platform === _platform && build.architecture === architecture)!
+    let buildSpec: ToolBuildSpec | undefined
 
-    if (!this.buildSpec) {
+    if (darwinARM) {
+      // first look for native arch, if not found, then try (potentially emulated) arch
+      buildSpec = findBuildSpec(spec, platform, "arm64") || findBuildSpec(spec, platform, "amd64")
+    } else {
+      buildSpec = findBuildSpec(spec, platform, architecture)!
+    }
+
+    if (!buildSpec) {
       throw new ConfigurationError(
         `Command ${spec.name} doesn't have a spec for this platform/architecture (${platform}-${architecture})`,
         {
           spec,
           platform,
           architecture,
+          darwinARM,
         }
       )
     }
 
-    this.lock = new AsyncLock()
+    this.buildSpec = buildSpec
 
     this.name = spec.name
     this.type = spec.type
@@ -215,7 +284,7 @@ export class PluginTool extends CliWrapper {
   }
 
   protected async download(log: LogEntry) {
-    return this.lock.acquire("download", async () => {
+    return lock.acquire(this.versionPath, async () => {
       if (await pathExists(this.versionPath)) {
         return
       }
@@ -312,6 +381,8 @@ export class PluginTool extends CliWrapper {
           })
           extractor.on("end", () => resolve())
         } else if (format === "zip") {
+          // Note: lazy-loading for startup performance
+          const { Extract } = require("unzipper")
           extractor = Extract({ path: tmpPath })
           extractor.on("close", () => resolve())
         } else {

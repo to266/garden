@@ -49,7 +49,7 @@ For full test configuration by module type, please take a look at our [reference
 
 ### Integration Testing
 
-Below is an example of a `frontend` module that has a `unit` test and an `integ` test that depends on a `backend` module. The `integ` test checks whether the frontend gets the correct response from the backend. The example is based on our [vote example project](https://github.com/garden-io/garden/tree/0.12.25/examples/vote).
+Below is an example of a `frontend` module that has a `unit` test and an `integ` test that depends on a `backend` module. The `integ` test checks whether the frontend gets the correct response from the backend. The example is based on our [vote example project](https://github.com/garden-io/garden/tree/0.12.45/examples/vote).
 
 Here's the configuration for `frontend` module:
 
@@ -141,6 +141,10 @@ kubectl delete -n garden-system--metadata $(kubectl get configmap -n garden-syst
 
 The `exec` module type runs tests locally in your shell. By default, the `exec` module type executes tests in the Garden build directory (under `.garden/build/<module-name>`). By setting `local: true`, the tests are executed in the module
 source directory instead.
+
+### Kubernetes and Helm Modules
+
+Because a Kubernetes or Helm module can contain any number of Kubernetes resources, a `serviceResource` needs to be specified to determine the pod spec for the test pod. You can see the whole pod spec used in the reference docs for [kubernetes](https://docs.garden.io/reference/module-types/kubernetes#tests-.resource) and [helm modules](https://docs.garden.io/reference/module-types/helm#tests-.resource). Please note that the `startupProbe`, `livenessProbe` and `readinessProbe` are stripped from your pod spec. Health checks for your application might fail when the container is used for testing because the main process usually running in that container is replaced by the test command.
 
 ## Next Steps
 

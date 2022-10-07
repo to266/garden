@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -21,6 +21,7 @@ export interface FileWriterConfig {
   level: LogLevel
   logFilePath: string
   fileTransportOptions?: {}
+  json?: boolean
   truncatePrevious?: boolean
 }
 
@@ -37,7 +38,7 @@ const DEFAULT_FILE_TRANSPORT_OPTIONS: FileTransportOptions = {
   maxFiles: 1,
 }
 
-const levelToStr = (lvl: LogLevel): string => LogLevel[lvl]
+export const levelToStr = (lvl: LogLevel): string => LogLevel[lvl]
 
 export function render(level: LogLevel, entry: LogEntry): string | null {
   if (level >= entry.level) {
@@ -50,9 +51,9 @@ export function render(level: LogLevel, entry: LogEntry): string | null {
 export class FileWriter extends Writer {
   type = "file"
 
-  private fileLogger: winston.Logger | null
-  private logFilePath: string
-  private fileTransportOptions: FileTransportOptions
+  protected fileLogger: winston.Logger | null
+  protected logFilePath: string
+  protected fileTransportOptions: FileTransportOptions
 
   constructor(logFilePath: string, config: FileWriterConfig) {
     super(config.level)
@@ -75,7 +76,7 @@ export class FileWriter extends Writer {
         await truncate(logFilePath)
       } catch (_) {}
     }
-    return new FileWriter(logFilePath, config)
+    return new this(logFilePath, config) // We use `this` in order for this factory method to work for subclasses
   }
 
   // Only init if needed to prevent unnecessary file writes

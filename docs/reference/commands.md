@@ -23,7 +23,7 @@ The following option flags can be used with any of the CLI commands:
   | `--root` | `-r` | path | Override project root directory (defaults to working directory). Can be absolute or relative to current directory.
   | `--silent` | `-s` | boolean | Suppress log output. Same as setting --logger-type&#x3D;quiet.
   | `--env` | `-e` | string | The environment (and optionally namespace) to work against.
-  | `--logger-type` |  | `quiet` `basic` `fancy` `fullscreen` `json`  | Set logger type. fancy updates log lines in-place when their status changes (e.g. when tasks complete), basic appends a new log line when a log line&#x27;s status changes, json same as basic, but renders log lines as JSON, quiet suppresses all log output, same as --silent.
+  | `--logger-type` |  | `quiet` `basic` `fancy` `json`  | Set logger type. fancy updates log lines in-place when their status changes (e.g. when tasks complete), basic appends a new log line when a log line&#x27;s status changes, json same as basic, but renders log lines as JSON, quiet suppresses all log output, same as --silent.
   | `--log-level` | `-l` | `error` `warn` `info` `verbose` `debug` `silly` `0` `1` `2` `3` `4` `5`  | Set logger level. Values can be either string or numeric and are prioritized from 0 to 5 (highest to lowest) as follows: error: 0, warn: 1, info: 2, verbose: 3, debug: 4, silly: 5.
   | `--output` | `-o` | `json` `yaml`  | Output command result in specified format (note: disables progress logging and interactive functionality).
   | `--emoji` |  | boolean | Enable emoji in output (defaults to true if the environment supports it).
@@ -49,10 +49,6 @@ Examples:
     garden build --force    # force rebuild of modules
     garden build --watch    # watch for changes to code
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
-
 #### Usage
 
     garden build [modules] [options]
@@ -69,6 +65,7 @@ Examples:
 | -------- | ----- | ---- | ----------- |
   | `--force` | `-f` | boolean | Force rebuild of module(s).
   | `--watch` | `-w` | boolean | Watch for changes in module(s) and auto-build.
+  | `--with-dependants` |  | boolean | Also rebuild modules that have build dependencies on one of the modules specified as CLI arguments (recursively). Note: This option has no effect unless a list of module names is specified as CLI arguments (since then, every module in the project will be rebuilt).
 
 #### Outputs
 
@@ -112,6 +109,12 @@ deployments:
     # Additional detail, specific to the provider.
     detail:
 
+    # Whether the service was deployed with dev mode enabled.
+    devMode:
+
+    # Whether the service was deployed with local mode enabled.
+    localMode:
+
     namespaceStatuses:
       - pluginName:
 
@@ -149,7 +152,11 @@ deployments:
 
     # List of currently deployed ingress endpoints for the service.
     ingresses:
-      - # The ingress path that should be matched to route to this service.
+      - # The port number that the service is exposed on internally.
+        # This defaults to the first specified port for the service.
+        port:
+
+        # The ingress path that should be matched to route to this service.
         path:
 
         # The protocol to use for the ingress.
@@ -157,10 +164,6 @@ deployments:
 
         # The hostname where the service can be accessed.
         hostname:
-
-        # The port number that the service is exposed on internally.
-        # This defaults to the first specified port for the service.
-        port:
 
     # Latest status message of the service (if any).
     lastMessage:
@@ -267,10 +270,6 @@ Examples:
 
 Note: Currently only supports simple GET requests for HTTP/HTTPS ingresses.
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden call <serviceAndPath> 
@@ -301,10 +300,6 @@ Examples:
     garden config analytics-enabled true   # enable analytics
     garden config analytics-enabled false  # disable analytics
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden config analytics-enabled [enable] 
@@ -332,10 +327,6 @@ Examples:
     garden create project --name my-project   # set the project name to my-project
     garden create project --interactive=false # don't prompt for user inputs when creating the config
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden create project [options]
@@ -344,6 +335,7 @@ Examples:
 
 | Argument | Alias | Type | Description |
 | -------- | ----- | ---- | ----------- |
+  | `--skip-comments` |  | boolean | Set to true to disable comment generation.
   | `--dir` |  | path | Directory to place the project in (defaults to current directory).
   | `--filename` |  | string | Filename to place the project config in (defaults to project.garden.yml).
   | `--interactive` | `-i` | boolean | Set to false to disable interactive prompts.
@@ -364,10 +356,6 @@ Examples:
     garden create module --name my-module     # set the module name to my-module
     garden create module --interactive=false  # don't prompt for user inputs when creating the module
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden create module [options]
@@ -376,6 +364,7 @@ Examples:
 
 | Argument | Alias | Type | Description |
 | -------- | ----- | ---- | ----------- |
+  | `--skip-comments` |  | boolean | Set to true to disable comment generation.
   | `--dir` |  | path | Directory to place the module in (defaults to current directory).
   | `--filename` |  | string | Filename to place the module config in (defaults to garden.yml).
   | `--interactive` | `-i` | boolean | Set to false to disable interactive prompts.
@@ -393,10 +382,6 @@ Examples:
 
     garden delete secret kubernetes somekey
     garden del secret local-kubernetes some-other-key
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -421,14 +406,15 @@ and reset it. When you then run `garden deploy`, the environment will be reconfi
 This can be useful if you find the environment to be in an inconsistent state, or need/want to free up
 resources.
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
-
 #### Usage
 
-    garden delete environment 
+    garden delete environment [options]
 
+#### Options
+
+| Argument | Alias | Type | Description |
+| -------- | ----- | ---- | ----------- |
+  | `--dependants-first` |  | boolean | Delete services in reverse dependency order. That is, if service-a has a dependency on service-b, service-a will be deleted before service-b when calling garden delete environment service-a,service-b --dependants-first. When this flag is not used, all services in the project are deleted simultaneously.
 
 #### Outputs
 
@@ -468,6 +454,12 @@ serviceStatuses:
     # Additional detail, specific to the provider.
     detail:
 
+    # Whether the service was deployed with dev mode enabled.
+    devMode:
+
+    # Whether the service was deployed with local mode enabled.
+    localMode:
+
     namespaceStatuses:
       - pluginName:
 
@@ -505,7 +497,11 @@ serviceStatuses:
 
     # List of currently deployed ingress endpoints for the service.
     ingresses:
-      - # The ingress path that should be matched to route to this service.
+      - # The port number that the service is exposed on internally.
+        # This defaults to the first specified port for the service.
+        port:
+
+        # The ingress path that should be matched to route to this service.
         path:
 
         # The protocol to use for the ingress.
@@ -513,10 +509,6 @@ serviceStatuses:
 
         # The hostname where the service can be accessed.
         hostname:
-
-        # The port number that the service is exposed on internally.
-        # This defaults to the first specified port for the service.
-        port:
 
     # Latest status message of the service (if any).
     lastMessage:
@@ -554,13 +546,9 @@ Examples:
     garden delete service my-service # deletes my-service
     garden delete service            # deletes all deployed services in the project
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
-
 #### Usage
 
-    garden delete service [services] 
+    garden delete service [services] [options]
 
 #### Arguments
 
@@ -568,6 +556,12 @@ Examples:
 | -------- | -------- | ----------- |
   | `services` | No | The name(s) of the service(s) to delete. Use comma as a separator to specify multiple services.
 
+#### Options
+
+| Argument | Alias | Type | Description |
+| -------- | ----- | ---- | ----------- |
+  | `--dependants-first` |  | boolean | Delete services in reverse dependency order. That is, if service-a has a dependency on service-b, service-a will be deleted before service-b when calling garden delete environment service-a,service-b --dependants-first. When this flag is not used, all services in the project are deleted simultaneously.
+  | `--with-dependants` |  | boolean | Also delete services that have service dependencies on one of the services specified as CLI arguments (recursively).  When used, this option implies --dependants-first. Note: This option has no effect unless a list of service names is specified as CLI arguments (since then, every service in the project will be deleted).
 
 #### Outputs
 
@@ -578,6 +572,12 @@ Examples:
 
   # Additional detail, specific to the provider.
   detail:
+
+  # Whether the service was deployed with dev mode enabled.
+  devMode:
+
+  # Whether the service was deployed with local mode enabled.
+  localMode:
 
   namespaceStatuses:
     - pluginName:
@@ -616,7 +616,11 @@ Examples:
 
   # List of currently deployed ingress endpoints for the service.
   ingresses:
-    - # The ingress path that should be matched to route to this service.
+    - # The port number that the service is exposed on internally.
+      # This defaults to the first specified port for the service.
+      port:
+
+      # The ingress path that should be matched to route to this service.
       path:
 
       # The protocol to use for the ingress.
@@ -624,10 +628,6 @@ Examples:
 
       # The hostname where the service can be accessed.
       hostname:
-
-      # The port number that the service is exposed on internally.
-      # This defaults to the first specified port for the service.
-      port:
 
   # Latest status message of the service (if any).
   lastMessage:
@@ -671,12 +671,10 @@ Examples:
     garden deploy --watch              # watch for changes to code
     garden deploy --dev=my-service     # deploys all services, with dev mode enabled for my-service
     garden deploy --dev                # deploys all compatible services with dev mode enabled
+    garden deploy --local=my-service   # deploys all services, with local mode enabled for my-service
+    garden deploy --local              # deploys all compatible services with local mode enabled
     garden deploy --env stage          # deploy your services to an environment called stage
     garden deploy --skip service-b     # deploy all services except service-b
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -695,9 +693,13 @@ Examples:
   | `--force` |  | boolean | Force redeploy of service(s).
   | `--force-build` |  | boolean | Force rebuild of module(s).
   | `--watch` | `-w` | boolean | Watch for changes in module(s) and auto-deploy.
-  | `--dev-mode` | `-dev` | array:string | [EXPERIMENTAL] The name(s) of the service(s) to deploy with dev mode enabled. Use comma as a separator to specify multiple services. Use * to deploy all services with dev mode enabled. When this option is used, the command is run in watch mode (i.e. implicitly sets the --watch/-w flag).
-  | `--hot-reload` | `-hot` | array:string | The name(s) of the service(s) to deploy with hot reloading enabled. Use comma as a separator to specify multiple services. Use * to deploy all services with hot reloading enabled (ignores services belonging to modules that don&#x27;t support or haven&#x27;t configured hot reloading). When this option is used, the command is run in watch mode (i.e. implicitly sets the --watch/-w flag).
+  | `--dev-mode` | `--dev` | array:string | The name(s) of the service(s) to deploy with dev mode enabled. Use comma as a separator to specify multiple services. Use * to deploy all services with dev mode enabled. When this option is used, the command is run in watch mode (i.e. implicitly sets the --watch/-w flag).
+  | `--hot-reload` | `--hot` | array:string | The name(s) of the service(s) to deploy with hot reloading enabled. Use comma as a separator to specify multiple services. Use * to deploy all services with hot reloading enabled (ignores services belonging to modules that don&#x27;t support or haven&#x27;t configured hot reloading). When this option is used, the command is run in watch mode (i.e. implicitly sets the --watch/-w flag).
+  | `--local-mode` | `--local` | array:string | [EXPERIMENTAL] The name(s) of the service(s) to be started locally with local mode enabled. Use comma as a separator to specify multiple services. Use * to deploy all services with local mode enabled. When this option is used, the command is run in persistent mode.
+This always takes the precedence over the dev mode if there are any conflicts, i.e. if the same services are passed to both &#x60;--dev&#x60; and &#x60;--local&#x60; options.
   | `--skip` |  | array:string | The name(s) of services you&#x27;d like to skip when deploying.
+  | `--skip-dependencies` | `--nodeps` | boolean | Deploy the specified services, but don&#x27;t deploy any additional services that they depend on or run any tasks that they depend on. This option can only be used when a list of service names is passed as CLI arguments. This can be useful e.g. when your stack has already been deployed, and you want to deploy a subset of services in dev mode without redeploying any service dependencies that may have changed since you last deployed.
+  | `--forward` |  | boolean | Create port forwards and leave process running without watching for changes. Ignored if --watch/-w flag is set or when in dev or hot-reload mode.
 
 #### Outputs
 
@@ -741,6 +743,12 @@ deployments:
     # Additional detail, specific to the provider.
     detail:
 
+    # Whether the service was deployed with dev mode enabled.
+    devMode:
+
+    # Whether the service was deployed with local mode enabled.
+    localMode:
+
     namespaceStatuses:
       - pluginName:
 
@@ -778,7 +786,11 @@ deployments:
 
     # List of currently deployed ingress endpoints for the service.
     ingresses:
-      - # The ingress path that should be matched to route to this service.
+      - # The port number that the service is exposed on internally.
+        # This defaults to the first specified port for the service.
+        port:
+
+        # The ingress path that should be matched to route to this service.
         path:
 
         # The protocol to use for the ingress.
@@ -786,10 +798,6 @@ deployments:
 
         # The hostname where the service can be accessed.
         hostname:
-
-        # The port number that the service is exposed on internally.
-        # This defaults to the first specified port for the service.
-        port:
 
     # Latest status message of the service (if any).
     lastMessage:
@@ -895,13 +903,12 @@ Examples:
     garden dev
     garden dev --hot=foo-service,bar-service  # enable hot reloading for foo-service and bar-service
     garden dev --hot=*                        # enable hot reloading for all compatible services
+    garden dev --local=service-1,service-2    # enable local mode for service-1 and service-2
+    garden dev --local=*                      # enable local mode for all compatible services
     garden dev --skip-tests=                  # skip running any tests
+    garden dev --force                        # force redeploy of services when the command starts
     garden dev --name integ                   # run all tests with the name 'integ' in the project
     garden test --name integ*                 # run all tests with the name starting with 'integ' in the project
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -917,9 +924,12 @@ Examples:
 
 | Argument | Alias | Type | Description |
 | -------- | ----- | ---- | ----------- |
-  | `--hot-reload` | `-hot` | array:string | The name(s) of the service(s) to deploy with hot reloading enabled. Use comma as a separator to specify multiple services. Use * to deploy all services with hot reloading enabled (ignores services belonging to modules that don&#x27;t support or haven&#x27;t configured hot reloading).
+  | `--force` |  | boolean | Force redeploy of service(s).
+  | `--hot-reload` | `--hot` | array:string | The name(s) of the service(s) to deploy with hot reloading enabled. Use comma as a separator to specify multiple services. Use * to deploy all services with hot reloading enabled (ignores services belonging to modules that don&#x27;t support or haven&#x27;t configured hot reloading).
+  | `--local-mode` | `--local` | array:string | [EXPERIMENTAL] The name(s) of the service(s) to be started locally with local mode enabled. Use comma as a separator to specify multiple services. Use * to deploy all services with local mode enabled. When this option is used, the command is run in persistent mode.
+This always takes the precedence over the dev mode if there are any conflicts, i.e. if the same services are passed to both &#x60;--dev&#x60; and &#x60;--local&#x60; options.
   | `--skip-tests` |  | boolean | Disable running the tests.
-  | `--test-names` | `-tn` | array:string | Filter the tests to run by test name across all modules (leave unset to run all tests). Accepts glob patterns (e.g. integ* would run both &#x27;integ&#x27; and &#x27;integration&#x27;).
+  | `--test-names` | `--tn` | array:string | Filter the tests to run by test name across all modules (leave unset to run all tests). Accepts glob patterns (e.g. integ* would run both &#x27;integ&#x27; and &#x27;integration&#x27;).
 
 
 ### garden exec
@@ -934,10 +944,6 @@ _NOTE: This command may not be supported for all module types._
 Examples:
 
      garden exec my-service /bin/sh   # runs a shell in the my-service container
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -972,24 +978,20 @@ stdout:
 stderr:
 ```
 
-### garden enterprise secrets list
+### garden cloud secrets list
 
-**[EXPERIMENTAL] List secrets.**
+**List secrets.**
 
-List all secrets from Garden Enterprise. Optionally filter on environment, user IDs, or secret names.
+List all secrets from Garden Cloud. Optionally filter on environment, user IDs, or secret names.
 
 Examples:
-    garden enterprise secrets list                                          # list all secrets
-    garden enterprise secrets list --filter-envs dev                        # list all secrets from the dev environment
-    garden enterprise secrets list --filter-envs dev --filter-names *_DB_*  # list all secrets from the dev environment that have '_DB_' in their name.
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
+    garden cloud secrets list                                          # list all secrets
+    garden cloud secrets list --filter-envs dev                        # list all secrets from the dev environment
+    garden cloud secrets list --filter-envs dev --filter-names *_DB_*  # list all secrets from the dev environment that have '_DB_' in their name.
 
 #### Usage
 
-    garden enterprise secrets list [options]
+    garden cloud secrets list [options]
 
 #### Options
 
@@ -1000,31 +1002,27 @@ Examples:
   | `--filter-names` |  | array:string | Filter on secret name. Use comma as a separator to filter on multiple secret names. Accepts glob patterns.
 
 
-### garden enterprise secrets create
+### garden cloud secrets create
 
-**[EXPERIMENTAL] Create secrets**
+**Create secrets**
 
-Create secrets in Garden Enterprise. You can create project wide secrets or optionally scope
+Create secrets in Garden Cloud. You can create project wide secrets or optionally scope
 them to an environment, or an environment and a user.
 
 To scope secrets to a user, you will need the user's ID which you can get from the
-`garden enterprise users list` command.
+`garden cloud users list` command.
 
 You can optionally read the secrets from a file.
 
 Examples:
-    garden enterprise secrets create DB_PASSWORD=my-pwd,ACCESS_KEY=my-key   # create two secrets
-    garden enterprise secrets create ACCESS_KEY=my-key --scope-to-env ci    # create a secret and scope it to the ci environment
-    garden enterprise secrets create ACCESS_KEY=my-key --scope-to-env ci --scope-to-user 9  # create a secret and scope it to the ci environment and user with ID 9
-    garden enterprise secrets create --from-file /path/to/secrets.txt  # create secrets from the key value pairs in the secrets.txt file
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
+    garden cloud secrets create DB_PASSWORD=my-pwd,ACCESS_KEY=my-key   # create two secrets
+    garden cloud secrets create ACCESS_KEY=my-key --scope-to-env ci    # create a secret and scope it to the ci environment
+    garden cloud secrets create ACCESS_KEY=my-key --scope-to-env ci --scope-to-user 9  # create a secret and scope it to the ci environment and user with ID 9
+    garden cloud secrets create --from-file /path/to/secrets.txt  # create secrets from the key value pairs in the secrets.txt file
 
 #### Usage
 
-    garden enterprise secrets create [secrets] [options]
+    garden cloud secrets create [secrets] [options]
 
 #### Arguments
 
@@ -1041,23 +1039,19 @@ Examples:
   | `--from-file` |  | path | Read the secrets from the file at the given path. The file should have standard &quot;dotenv&quot; format, as defined by [dotenv](https://github.com/motdotla/dotenv#rules).
 
 
-### garden enterprise secrets delete
+### garden cloud secrets delete
 
-**[EXPERIMENTAL] Delete secrets.**
+**Delete secrets.**
 
-Delete secrets in Garden Enterprise. You will nee the IDs of the secrets you want to delete,
-which you which you can get from the `garden enterprise secrets list` command.
+Delete secrets in Garden Cloud. You will nee the IDs of the secrets you want to delete,
+which you which you can get from the `garden cloud secrets list` command.
 
 Examples:
-    garden enterprise secrets delete 1,2,3   # delete secrets with IDs 1,2, and 3.
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
+    garden cloud secrets delete 1,2,3   # delete secrets with IDs 1,2, and 3.
 
 #### Usage
 
-    garden enterprise secrets delete [ids] 
+    garden cloud secrets delete [ids] 
 
 #### Arguments
 
@@ -1067,24 +1061,20 @@ Examples:
 
 
 
-### garden enterprise users list
+### garden cloud users list
 
-**[EXPERIMENTAL] List users.**
+**List users.**
 
-List all users from Garden Enterprise. Optionally filter on group names or user names.
+List all users from Garden Cloud. Optionally filter on group names or user names.
 
 Examples:
-    garden enterprise users list                            # list all users
-    garden enterprise users list --filter-names Gordon*     # list all the Gordons in Garden Enterprise. Useful if you have a lot of Gordons.
-    garden enterprise users list --filter-groups devs-*     # list all users in groups that with names that start with 'dev-'
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
+    garden cloud users list                            # list all users
+    garden cloud users list --filter-names Gordon*     # list all the Gordons in Garden Cloud. Useful if you have a lot of Gordons.
+    garden cloud users list --filter-groups devs-*     # list all users in groups that with names that start with 'dev-'
 
 #### Usage
 
-    garden enterprise users list [options]
+    garden cloud users list [options]
 
 #### Options
 
@@ -1094,15 +1084,15 @@ Examples:
   | `--filter-groups` |  | array:string | Filter on the groups the user belongs to. Use comma as a separator to filter on multiple groups. Accepts glob patterns.
 
 
-### garden enterprise users create
+### garden cloud users create
 
-**[EXPERIMENTAL] Create users**
+**Create users**
 
-Create users in Garden Enterprise and optionally add the users to specific groups.
-You can get the group IDs from the `garden enterprise users list` command.
+Create users in Garden Cloud and optionally add the users to specific groups.
+You can get the group IDs from the `garden cloud users list` command.
 
 To create a user, you'll need their GitHub or GitLab username, depending on which one is your VCS provider, and the name
-they should have in Garden Enterprise. Note that it **must** the their GitHub/GitLab username, not their email, as people
+they should have in Garden Cloud. Note that it **must** the their GitHub/GitLab username, not their email, as people
 can have several emails tied to their GitHub/GitLab accounts.
 
 You can optionally read the users from a file. The file must have the format vcs-username="Actual Username". For example:
@@ -1111,17 +1101,13 @@ fatema_m="Fatema M"
 gordon99="Gordon G"
 
 Examples:
-    garden enterprise users create fatema_m="Fatema M",gordon99="Gordon G"      # create two users
-    garden enterprise users create fatema_m="Fatema M" --add-to-groups 1,2  # create a user and add two groups with IDs 1,2
-    garden enterprise users create --from-file /path/to/users.txt           # create users from the key value pairs in the users.txt file
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
+    garden cloud users create fatema_m="Fatema M",gordon99="Gordon G"      # create two users
+    garden cloud users create fatema_m="Fatema M" --add-to-groups 1,2  # create a user and add two groups with IDs 1,2
+    garden cloud users create --from-file /path/to/users.txt           # create users from the key value pairs in the users.txt file
 
 #### Usage
 
-    garden enterprise users create [users] [options]
+    garden cloud users create [users] [options]
 
 #### Arguments
 
@@ -1137,23 +1123,19 @@ Examples:
   | `--from-file` |  | path | Read the users from the file at the given path. The file should have standard &quot;dotenv&quot; format (as defined by [dotenv](https://github.com/motdotla/dotenv#rules)) where the VCS username is the key and the name is the value.
 
 
-### garden enterprise users delete
+### garden cloud users delete
 
-**[EXPERIMENTAL] Delete users.**
+**Delete users.**
 
-Delete users in Garden Enterprise. You will nee the IDs of the users you want to delete,
-which you which you can get from the `garden enterprise users list` command.
+Delete users in Garden Cloud. You will nee the IDs of the users you want to delete,
+which you which you can get from the `garden cloud users list` command.
 
 Examples:
-    garden enterprise users delete 1,2,3   # delete users with IDs 1,2, and 3.
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
+    garden cloud users delete 1,2,3   # delete users with IDs 1,2, and 3.
 
 #### Usage
 
-    garden enterprise users delete [ids] 
+    garden cloud users delete [ids] 
 
 #### Arguments
 
@@ -1163,24 +1145,20 @@ Examples:
 
 
 
-### garden enterprise groups list
+### garden cloud groups list
 
-**[EXPERIMENTAL] List groups.**
+**List groups.**
 
-List all groups from Garden Enterprise. This is useful for getting the group IDs when creating
-users via the `garden enterprise users create` coomand.
+List all groups from Garden Cloud. This is useful for getting the group IDs when creating
+users via the `garden cloud users create` command.
 
 Examples:
-    garden enterprise groups list                       # list all groups
-    garden enterprise groups list --filter-names dev-*  # list all groups that start with 'dev-'
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
+    garden cloud groups list                       # list all groups
+    garden cloud groups list --filter-names dev-*  # list all groups that start with 'dev-'
 
 #### Usage
 
-    garden enterprise groups list [options]
+    garden cloud groups list [options]
 
 #### Options
 
@@ -1194,10 +1172,6 @@ Examples:
 **Outputs the dependency relationships specified in this project's garden.yml files.**
 
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden get graph 
@@ -1208,10 +1182,6 @@ Examples:
 
 **Outputs the full configuration for this project and environment.**
 
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -1284,15 +1254,18 @@ providers:
                   source:
 
                   # POSIX-style path or filename to copy the directory or file(s), relative to the build directory.
-                  # Defaults to to same as source path.
+                  # Defaults to the same as source path.
                   target:
+
+          # Maximum time in seconds to wait for build to finish.
+          timeout:
 
         # A description of the module.
         description:
 
         # Set this to `true` to disable the module. You can use this with conditional template strings to disable
         # modules based on, for example, the current environment or other variables (e.g. `disabled:
-        # \${environment.name == "prod"}`). This can be handy when you only need certain modules for specific
+        # ${environment.name == "prod"}`). This can be handy when you only need certain modules for specific
         # environments, e.g. only for development.
         #
         # Disabling a module means that any services, tasks and tests contained in it will not be deployed or run. It
@@ -1349,6 +1322,24 @@ providers:
         variables:
           <name>:
 
+        # Specify a path (relative to the module root) to a file containing variables, that we apply on top of the
+        # module-level `variables` field.
+        #
+        # The format of the files is determined by the configured file's extension:
+        #
+        # * `.env` - Standard "dotenv" format, as defined by [dotenv](https://github.com/motdotla/dotenv#rules).
+        # * `.yaml`/`.yml` - YAML. The file must consist of a YAML document, which must be a map (dictionary). Keys
+        # may contain any value type.
+        # * `.json` - JSON. Must contain a single JSON _object_ (not an array).
+        #
+        # _NOTE: The default varfile format will change to YAML in Garden v0.13, since YAML allows for definition of
+        # nested objects and arrays._
+        #
+        # To use different module-level varfiles in different environments, you can template in the environment name
+        # to the varfile name, e.g. `varfile: "my-module.${environment.name}.env` (this assumes that the corresponding
+        # varfiles exist).
+        varfile:
+
         # The filesystem path of the module.
         path:
 
@@ -1378,7 +1369,7 @@ providers:
 
             # Set this to `true` to disable the service. You can use this with conditional template strings to
             # enable/disable services based on, for example, the current environment or other variables (e.g.
-            # `enabled: \${environment.name != "prod"}`). This can be handy when you only need certain services for
+            # `enabled: ${environment.name != "prod"}`). This can be handy when you only need certain services for
             # specific environments, e.g. only for development.
             #
             # Disabling a service means that it will not be deployed, and will also be ignored if it is declared as a
@@ -1415,7 +1406,7 @@ providers:
 
             # Set this to `true` to disable the task. You can use this with conditional template strings to
             # enable/disable tasks based on, for example, the current environment or other variables (e.g. `enabled:
-            # \${environment.name != "prod"}`). This can be handy when you only want certain tasks to run in specific
+            # ${environment.name != "prod"}`). This can be handy when you only want certain tasks to run in specific
             # environments, e.g. only for development.
             #
             # Disabling a task means that it will not be run, and will also be ignored if it is declared as a runtime
@@ -1449,7 +1440,7 @@ providers:
 
             # Set this to `true` to disable the test. You can use this with conditional template strings to
             # enable/disable tests based on, for example, the current environment or other variables (e.g.
-            # `enabled: \${environment.name != "prod"}`). This is handy when you only want certain tests to run in
+            # `enabled: ${environment.name != "prod"}`). This is handy when you only want certain tests to run in
             # specific environments, e.g. only during CI.
             disabled:
 
@@ -1469,6 +1460,11 @@ providers:
             # Note that any existing file with the same name will be overwritten. If the path contains one or more
             # directories, they will be automatically created if missing.
             targetPath:
+
+            # By default, Garden will attempt to resolve any Garden template strings in source files. Set this to
+            # false to skip resolving template strings. Note that this does not apply when setting the `value` field,
+            # since that's resolved earlier when parsing the configuration.
+            resolveTemplates:
 
             # The desired file contents as a string.
             value:
@@ -1557,14 +1553,17 @@ moduleConfigs:
               source:
 
               # POSIX-style path or filename to copy the directory or file(s), relative to the build directory.
-              # Defaults to to same as source path.
+              # Defaults to the same as source path.
               target:
+
+      # Maximum time in seconds to wait for build to finish.
+      timeout:
 
     # A description of the module.
     description:
 
     # Set this to `true` to disable the module. You can use this with conditional template strings to disable modules
-    # based on, for example, the current environment or other variables (e.g. `disabled: \${environment.name ==
+    # based on, for example, the current environment or other variables (e.g. `disabled: ${environment.name ==
     # "prod"}`). This can be handy when you only need certain modules for specific environments, e.g. only for
     # development.
     #
@@ -1621,6 +1620,24 @@ moduleConfigs:
     variables:
       <name>:
 
+    # Specify a path (relative to the module root) to a file containing variables, that we apply on top of the
+    # module-level `variables` field.
+    #
+    # The format of the files is determined by the configured file's extension:
+    #
+    # * `.env` - Standard "dotenv" format, as defined by [dotenv](https://github.com/motdotla/dotenv#rules).
+    # * `.yaml`/`.yml` - YAML. The file must consist of a YAML document, which must be a map (dictionary). Keys may
+    # contain any value type.
+    # * `.json` - JSON. Must contain a single JSON _object_ (not an array).
+    #
+    # _NOTE: The default varfile format will change to YAML in Garden v0.13, since YAML allows for definition of
+    # nested objects and arrays._
+    #
+    # To use different module-level varfiles in different environments, you can template in the environment name
+    # to the varfile name, e.g. `varfile: "my-module.${environment.name}.env` (this assumes that the corresponding
+    # varfiles exist).
+    varfile:
+
     # The filesystem path of the module.
     path:
 
@@ -1650,7 +1667,7 @@ moduleConfigs:
 
         # Set this to `true` to disable the service. You can use this with conditional template strings to
         # enable/disable services based on, for example, the current environment or other variables (e.g. `enabled:
-        # \${environment.name != "prod"}`). This can be handy when you only need certain services for specific
+        # ${environment.name != "prod"}`). This can be handy when you only need certain services for specific
         # environments, e.g. only for development.
         #
         # Disabling a service means that it will not be deployed, and will also be ignored if it is declared as a
@@ -1685,7 +1702,7 @@ moduleConfigs:
         dependencies:
 
         # Set this to `true` to disable the task. You can use this with conditional template strings to enable/disable
-        # tasks based on, for example, the current environment or other variables (e.g. `enabled: \${environment.name
+        # tasks based on, for example, the current environment or other variables (e.g. `enabled: ${environment.name
         # != "prod"}`). This can be handy when you only want certain tasks to run in specific environments, e.g. only
         # for development.
         #
@@ -1720,7 +1737,7 @@ moduleConfigs:
 
         # Set this to `true` to disable the test. You can use this with conditional template strings to
         # enable/disable tests based on, for example, the current environment or other variables (e.g.
-        # `enabled: \${environment.name != "prod"}`). This is handy when you only want certain tests to run in
+        # `enabled: ${environment.name != "prod"}`). This is handy when you only want certain tests to run in
         # specific environments, e.g. only during CI.
         disabled:
 
@@ -1740,6 +1757,11 @@ moduleConfigs:
         # Note that any existing file with the same name will be overwritten. If the path contains one or more
         # directories, they will be automatically created if missing.
         targetPath:
+
+        # By default, Garden will attempt to resolve any Garden template strings in source files. Set this to false to
+        # skip resolving template strings. Note that this does not apply when setting the `value` field, since that's
+        # resolved earlier when parsing the configuration.
+        resolveTemplates:
 
         # The desired file contents as a string.
         value:
@@ -1794,7 +1816,7 @@ workflowConfigs:
         # The file data as a string.
         data:
 
-        # The name of a Garden secret to copy the file data from (Garden Enterprise only).
+        # The name of a Garden secret to copy the file data from (Garden Cloud only).
         secretName:
 
     # The number of hours to keep the workflow pod running after completion.
@@ -1828,37 +1850,17 @@ workflowConfigs:
         # <number of step> is the sequential number of the step (first step being number 1).
         #
         # This identifier is useful when referencing command outputs in following steps. For example, if you set this
-        # to "my-step", following steps can reference the \${steps.my-step.outputs.*} key in the `script` or `command`
+        # to "my-step", following steps can reference the ${steps.my-step.outputs.*} key in the `script` or `command`
         # fields.
         name:
 
         # A Garden command this step should run, followed by any required or optional arguments and flags.
-        # Arguments and options for the commands may be templated, including references to previous steps, but for now
-        # the commands themselves (as listed below) must be hard-coded.
         #
-        # Supported commands:
+        # Note that commands that are _persistent_—e.g. the dev command, commands with a watch flag set, the logs
+        # command with following enabled etc.—are not supported. In general, workflow steps should run to completion.
         #
-        # `[build]`
-        # `[delete, environment]`
-        # `[delete, service]`
-        # `[deploy]`
-        # `[exec]`
-        # `[get, config]`
-        # `[get, outputs]`
-        # `[get, status]`
-        # `[get, task-result]`
-        # `[get, test-result]`
-        # `[link, module]`
-        # `[link, source]`
-        # `[publish]`
-        # `[run, task]`
-        # `[run, test]`
-        # `[test]`
-        # `[update-remote, all]`
-        # `[update-remote, modules]`
-        # `[update-remote, sources]`
-        #
-        #
+        # Global options like --env, --log-level etc. are currently not supported for built-in commands, since they
+        # are handled before the individual steps are run.
         command:
 
         # A description of the workflow step.
@@ -1901,7 +1903,7 @@ workflowConfigs:
         when:
 
     # A list of triggers that determine when the workflow should be run, and which environment should be used (Garden
-    # Enterprise only).
+    # Cloud only).
     triggers:
       - # The environment name (from your project configuration) to use for the workflow when matched by this trigger.
         environment:
@@ -1911,8 +1913,8 @@ workflowConfigs:
         namespace:
 
         # A list of [GitHub
-        # events](https://docs.github.com/en/developers/webhooks-and-events/webhook-events-and-payloads) that should
-        # trigger this workflow.
+        # events](https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads) that
+        # should trigger this workflow.
         #
         # See the Garden Cloud documentation on [configuring
         # workflows](https://cloud.docs.garden.io/getting-started/workflows) for more details.
@@ -1920,7 +1922,7 @@ workflowConfigs:
         # Supported events:
         #
         # `pull-request`, `pull-request-closed`, `pull-request-merged`, `pull-request-opened`,
-        # `pull-request-reopened`, `pull-request-updated`
+        # `pull-request-reopened`, `pull-request-updated`, `push`
         #
         #
         events:
@@ -1948,10 +1950,10 @@ projectName:
 # The local path to the project root.
 projectRoot:
 
-# The project ID (Garden Enterprise only).
+# The project ID (Garden Cloud only).
 projectId:
 
-# The Garden Enterprise domain (Garden Enterprise only).
+# The Garden Cloud domain (Garden Cloud only).
 domain:
 ```
 
@@ -1959,10 +1961,6 @@ domain:
 
 **Outputs a list of all linked remote sources and modules for this project.**
 
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -1982,10 +1980,6 @@ Examples:
     garden get outputs                 # resolve and print the outputs from the project
     garden get outputs --env=prod      # resolve and print the outputs from the project for the prod environment
     garden get outputs --output=json   # resolve and return the project outputs in JSON format
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -2008,11 +2002,8 @@ Examples:
 
     garden get modules                                                # list all modules in the project
     garden get modules --exclude-disabled=true                        # skip disabled modules
+    garden get modules --full                                         # show resolved config for each module
     garden get modules -o=json | jq '.modules["my-module"].version'   # get version of my-module
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -2028,6 +2019,7 @@ Examples:
 
 | Argument | Alias | Type | Description |
 | -------- | ----- | ---- | ----------- |
+  | `--full` |  | boolean | Show the full config for each module, with template strings resolved. Has no effect when the --output option is used.
   | `--exclude-disabled` |  | boolean | Exclude disabled modules from output.
 
 #### Outputs
@@ -2061,14 +2053,17 @@ modules:
               source:
 
               # POSIX-style path or filename to copy the directory or file(s), relative to the build directory.
-              # Defaults to to same as source path.
+              # Defaults to the same as source path.
               target:
+
+      # Maximum time in seconds to wait for build to finish.
+      timeout:
 
     # A description of the module.
     description:
 
     # Set this to `true` to disable the module. You can use this with conditional template strings to disable modules
-    # based on, for example, the current environment or other variables (e.g. `disabled: \${environment.name ==
+    # based on, for example, the current environment or other variables (e.g. `disabled: ${environment.name ==
     # "prod"}`). This can be handy when you only need certain modules for specific environments, e.g. only for
     # development.
     #
@@ -2125,6 +2120,24 @@ modules:
     variables:
       <name>:
 
+    # Specify a path (relative to the module root) to a file containing variables, that we apply on top of the
+    # module-level `variables` field.
+    #
+    # The format of the files is determined by the configured file's extension:
+    #
+    # * `.env` - Standard "dotenv" format, as defined by [dotenv](https://github.com/motdotla/dotenv#rules).
+    # * `.yaml`/`.yml` - YAML. The file must consist of a YAML document, which must be a map (dictionary). Keys may
+    # contain any value type.
+    # * `.json` - JSON. Must contain a single JSON _object_ (not an array).
+    #
+    # _NOTE: The default varfile format will change to YAML in Garden v0.13, since YAML allows for definition of
+    # nested objects and arrays._
+    #
+    # To use different module-level varfiles in different environments, you can template in the environment name
+    # to the varfile name, e.g. `varfile: "my-module.${environment.name}.env` (this assumes that the corresponding
+    # varfiles exist).
+    varfile:
+
     # The filesystem path of the module.
     path:
 
@@ -2151,7 +2164,7 @@ modules:
 
         # Set this to `true` to disable the service. You can use this with conditional template strings to
         # enable/disable services based on, for example, the current environment or other variables (e.g. `enabled:
-        # \${environment.name != "prod"}`). This can be handy when you only need certain services for specific
+        # ${environment.name != "prod"}`). This can be handy when you only need certain services for specific
         # environments, e.g. only for development.
         #
         # Disabling a service means that it will not be deployed, and will also be ignored if it is declared as a
@@ -2186,7 +2199,7 @@ modules:
         dependencies:
 
         # Set this to `true` to disable the task. You can use this with conditional template strings to enable/disable
-        # tasks based on, for example, the current environment or other variables (e.g. `enabled: \${environment.name
+        # tasks based on, for example, the current environment or other variables (e.g. `enabled: ${environment.name
         # != "prod"}`). This can be handy when you only want certain tasks to run in specific environments, e.g. only
         # for development.
         #
@@ -2221,7 +2234,7 @@ modules:
 
         # Set this to `true` to disable the test. You can use this with conditional template strings to
         # enable/disable tests based on, for example, the current environment or other variables (e.g.
-        # `enabled: \${environment.name != "prod"}`). This is handy when you only want certain tests to run in
+        # `enabled: ${environment.name != "prod"}`). This is handy when you only want certain tests to run in
         # specific environments, e.g. only during CI.
         disabled:
 
@@ -2241,6 +2254,11 @@ modules:
         # Note that any existing file with the same name will be overwritten. If the path contains one or more
         # directories, they will be automatically created if missing.
         targetPath:
+
+        # By default, Garden will attempt to resolve any Garden template strings in source files. Set this to false to
+        # skip resolving template strings. Note that this does not apply when setting the `value` field, since that's
+        # resolved earlier when parsing the configuration.
+        resolveTemplates:
 
         # The desired file contents as a string.
         value:
@@ -2275,12 +2293,8 @@ modules:
 
       # The version of each of the dependencies of the module.
       dependencyVersions:
+        # version hash of the dependency module
         <name>:
-          # The hash of all files belonging to the Garden module.
-          contentHash:
-
-          # List of file paths included in the version.
-          files:
 
       # List of file paths included in the version.
       files:
@@ -2313,10 +2327,6 @@ modules:
 
 **Outputs the full status of your environment.**
 
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -2361,6 +2371,12 @@ services:
     # Additional detail, specific to the provider.
     detail:
 
+    # Whether the service was deployed with dev mode enabled.
+    devMode:
+
+    # Whether the service was deployed with local mode enabled.
+    localMode:
+
     namespaceStatuses:
       - pluginName:
 
@@ -2398,7 +2414,11 @@ services:
 
     # List of currently deployed ingress endpoints for the service.
     ingresses:
-      - # The ingress path that should be matched to route to this service.
+      - # The port number that the service is exposed on internally.
+        # This defaults to the first specified port for the service.
+        port:
+
+        # The ingress path that should be matched to route to this service.
         path:
 
         # The protocol to use for the ingress.
@@ -2406,10 +2426,6 @@ services:
 
         # The hostname where the service can be accessed.
         hostname:
-
-        # The port number that the service is exposed on internally.
-        # This defaults to the first specified port for the service.
-        port:
 
     # Latest status message of the service (if any).
     lastMessage:
@@ -2461,10 +2477,6 @@ tests:
 **Lists the tasks defined in your project's modules.**
 
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden get tasks [tasks] 
@@ -2482,10 +2494,6 @@ tests:
 **Lists the tests defined in your project's modules.**
 
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden get tests [tests] 
@@ -2502,10 +2510,6 @@ tests:
 
 **Outputs the latest execution result of a provided task.**
 
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -2567,10 +2571,6 @@ artifacts:
 
 **Outputs the latest execution result of a provided test.**
 
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -2643,10 +2643,6 @@ garden get debug-info                    # create a zip file at the root of the 
 garden get debug-info --format yaml      # output provider info as YAML files (default is JSON)
 garden get debug-info --include-project  # include provider info for the project namespace (disabled by default)
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden get debug-info [options]
@@ -2668,13 +2664,26 @@ Check for openings at Berlin's vaccination centers at a 2
 second interval. If it finds one, you'll receive a notification
 with links to book an appointment.
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden get vaccine 
+
+
+
+### garden get workflows
+
+**Lists the workflows defined in your project.**
+
+
+#### Usage
+
+    garden get workflows [workflows] 
+
+#### Arguments
+
+| Argument | Required | Description |
+| -------- | -------- | ----------- |
+  | `workflows` | No | Specify workflow(s) to list. Use comma as a separator to specify multiple workflows.
 
 
 
@@ -2689,10 +2698,6 @@ level `garden.yml` config.
 Examples:
 
     garden link source my-source path/to/my-source # links my-source to its local version at the given path
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -2730,10 +2735,6 @@ Examples:
 
     garden link module my-module path/to/my-module # links my-module to its local version at the given path
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
-
 #### Usage
 
     garden link module <module> <path> 
@@ -2767,16 +2768,12 @@ to getting logs from the last minute when in `--follow` mode. You can change thi
 
 Examples:
 
-    garden logs                       # interleaves color-coded logs from all services (up to a certain limit)
-    garden logs --since 2d            # interleaves color-coded logs from all services from the last 2 days
-    garden logs --tail 100            # interleaves the last 100 log lines from all services
-    garden logs service-a,service-b   # interleaves color-coded logs for service-a and service-b
-    garden logs --follow              # keeps running and streams all incoming logs to the console
-    garden logs --original-color      # interleaves logs from all services and prints the original output color
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
+    garden logs                            # interleaves color-coded logs from all services (up to a certain limit)
+    garden logs --since 2d                 # interleaves color-coded logs from all services from the last 2 days
+    garden logs --tail 100                 # interleaves the last 100 log lines from all services
+    garden logs service-a,service-b        # interleaves color-coded logs for service-a and service-b
+    garden logs --follow                   # keeps running and streams all incoming logs to the console
+    garden logs --tag container=service-a  # only shows logs from containers with names matching the pattern
 
 #### Usage
 
@@ -2792,14 +2789,13 @@ Examples:
 
 | Argument | Alias | Type | Description |
 | -------- | ----- | ---- | ----------- |
+  | `--tag` |  | array:tag | Only show log lines that match the given tag, e.g. &#x60;--tag &#x27;container&#x3D;foo&#x27;&#x60;. If you specify multiple filters in a single tag option (e.g. &#x60;--tag &#x27;container&#x3D;foo,someOtherTag&#x3D;bar&#x27;&#x60;), they must all be matched. If you provide multiple &#x60;--tag&#x60; options (e.g. &#x60;--tag &#x27;container&#x3D;api&#x27; --tag &#x27;container&#x3D;frontend&#x27;&#x60;), they will be OR-ed together (i.e. if any of them match, the log line will be included). You can specify glob-style wildcards, e.g. &#x60;--tag &#x27;container&#x3D;prefix-*&#x27;&#x60;.
   | `--follow` | `-f` | boolean | Continuously stream new logs from the service(s).
-  | `--tail` | `-t` | number | Number of lines to show for each service. Defaults to showing all log lines (up to a certain limit). Takes precedence over
-the &#x60;--since&#x60; flag if both are set. Note that we don&#x27;t recommend using a large value here when in follow mode.
+  | `--tail` | `-t` | number | Number of lines to show for each service. Defaults to showing all log lines (up to a certain limit). Takes precedence over the &#x60;--since&#x60; flag if both are set. Note that we don&#x27;t recommend using a large value here when in follow mode.
   | `--show-container` |  | boolean | Show the name of the container with log output. May not apply to all providers
+  | `--show-tags` |  | boolean | Show any tags attached to each log line. May not apply to all providers
   | `--timestamps` |  | boolean | Show timestamps with log output.
-  | `--since` |  | moment | Only show logs newer than a relative duration like 5s, 2m, or 3h. Defaults to &#x60;&quot;1m&quot;&#x60; when &#x60;--follow&#x60; is true
-unless &#x60;--tail&#x60; is set. Note that we don&#x27;t recommend using a large value here when in follow mode.
-  | `--original-color` |  | boolean | Show the original color output of the logs instead of color coding them.
+  | `--since` |  | moment | Only show logs newer than a relative duration like 5s, 2m, or 3h. Defaults to &#x60;&quot;1m&quot;&#x60; when &#x60;--follow&#x60; is true unless &#x60;--tail&#x60; is set. Note that we don&#x27;t recommend using a large value here when in follow mode.
   | `--hide-service` |  | boolean | Hide the service name and render the logs directly.
 
 
@@ -2819,10 +2815,6 @@ Examples:
     garden migrate              # scans all garden.yml files and prints the updated versions along with the paths to them.
     garden migrate --write      # scans all garden.yml files and overwrites them with the updated versions.
     garden migrate ./garden.yml # scans the provided garden.yml file and prints the updated version.
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -2846,10 +2838,6 @@ Examples:
 **Print global options.**
 
 Prints all global options (options that can be applied to any command).
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -2875,10 +2863,6 @@ Examples:
 
     # List all the commands from the `kubernetes` plugin.
     garden plugins kubernetes
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -2914,10 +2898,6 @@ Examples:
 
     # Publish my-container with a tag of v1.2-<hash> (e.g. v1.2-abcdef123)
     garden publish my-container --tag "v1.2-${module.hash}"
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -2979,6 +2959,12 @@ deployments:
     # Additional detail, specific to the provider.
     detail:
 
+    # Whether the service was deployed with dev mode enabled.
+    devMode:
+
+    # Whether the service was deployed with local mode enabled.
+    localMode:
+
     namespaceStatuses:
       - pluginName:
 
@@ -3016,7 +3002,11 @@ deployments:
 
     # List of currently deployed ingress endpoints for the service.
     ingresses:
-      - # The ingress path that should be matched to route to this service.
+      - # The port number that the service is exposed on internally.
+        # This defaults to the first specified port for the service.
+        port:
+
+        # The ingress path that should be matched to route to this service.
         path:
 
         # The protocol to use for the ingress.
@@ -3024,10 +3014,6 @@ deployments:
 
         # The hostname where the service can be accessed.
         hostname:
-
-        # The port number that the service is exposed on internally.
-        # This defaults to the first specified port for the service.
-        port:
 
     # Latest status message of the service (if any).
     lastMessage:
@@ -3159,10 +3145,6 @@ Examples:
     garden run module my-container /bin/sh                           # run an interactive shell in a new my-container container
     garden run module my-container --interactive=false /some/script  # execute a script in my-container and return the output
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden run module <module> [arguments] [options]
@@ -3193,10 +3175,6 @@ Examples:
 
     garden run service my-service   # run an ad-hoc instance of a my-service and attach to it
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden run service <service> [options]
@@ -3224,10 +3202,6 @@ This is useful for re-running tasks ad-hoc, for example after writing/modifying 
 Examples:
 
     garden run task my-db-migration   # run my-migration
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -3312,10 +3286,6 @@ Examples:
 
     garden run test my-module integ                      # run the test named 'integ' in my-module
     garden run test my-module integ --interactive=false  # do not attach to the test run, just output results when completed
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
 
 #### Usage
 
@@ -3405,10 +3375,6 @@ Examples:
 
     garden run workflow my-workflow    # run my-workflow
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden run workflow <workflow> 
@@ -3426,10 +3392,6 @@ Examples:
 **Scans your project and outputs an overview of all modules.**
 
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden scan 
@@ -3445,10 +3407,6 @@ Starts the Garden dashboard for the current project, and your selected environme
 The dashboard will receive and display updates from other Garden processes that you run with the same Garden project, environment and namespace.
 
 Note: You must currently run one dashboard per-environment and namespace.
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -3476,10 +3434,6 @@ Examples:
    garden self-update 0.12.24  # switch to the 0.12.24 version of the CLI
    garden self-update --force  # re-install even if the same version is detected
    garden self-update --install-dir ~/garden  # install to ~/garden instead of detecting the directory
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -3520,10 +3474,6 @@ Examples:
     garden test --force           # force tests to be re-run, even if they've already run successfully
     garden test --watch           # watch for changes to code
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
-
 #### Usage
 
     garden test [modules] [options]
@@ -3542,6 +3492,8 @@ Examples:
   | `--force` | `-f` | boolean | Force re-test of module(s).
   | `--force-build` |  | boolean | Force rebuild of module(s).
   | `--watch` | `-w` | boolean | Watch for changes in module(s) and auto-test.
+  | `--skip` |  | array:string | The name(s) of tests you&#x27;d like to skip. Accepts glob patterns (e.g. integ* would skip both &#x27;integ&#x27; and &#x27;integration&#x27;). Applied after the &#x27;name&#x27; filter.
+  | `--skip-dependencies` | `--nodeps` | boolean | Don&#x27;t deploy any services or run any tasks that the requested tests depend on. This can be useful e.g. when your stack has already been deployed, and you want to run tests with runtime dependencies without redeploying any service dependencies that may have changed since you last deployed. Warning: Take great care when using this option in CI, since Garden won&#x27;t ensure that the runtime dependencies of your test suites are up to date when this option is used.
   | `--skip-dependants` |  | boolean | When using the modules argument, only run tests for those modules (and skip tests in other modules with dependencies on those modules).
 
 #### Outputs
@@ -3586,6 +3538,12 @@ deployments:
     # Additional detail, specific to the provider.
     detail:
 
+    # Whether the service was deployed with dev mode enabled.
+    devMode:
+
+    # Whether the service was deployed with local mode enabled.
+    localMode:
+
     namespaceStatuses:
       - pluginName:
 
@@ -3623,7 +3581,11 @@ deployments:
 
     # List of currently deployed ingress endpoints for the service.
     ingresses:
-      - # The ingress path that should be matched to route to this service.
+      - # The port number that the service is exposed on internally.
+        # This defaults to the first specified port for the service.
+        port:
+
+        # The ingress path that should be matched to route to this service.
         path:
 
         # The protocol to use for the ingress.
@@ -3631,10 +3593,6 @@ deployments:
 
         # The hostname where the service can be accessed.
         hostname:
-
-        # The port number that the service is exposed on internally.
-        # This defaults to the first specified port for the service.
-        port:
 
     # Latest status message of the service (if any).
     lastMessage:
@@ -3753,10 +3711,6 @@ Examples:
     # List all available tools.
     garden tools
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden tools [tool] [options]
@@ -3785,10 +3739,6 @@ Examples:
 
     garden unlink source my-source  # unlinks my-source
     garden unlink source --all      # unlinks all sources
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -3819,10 +3769,6 @@ Examples:
     garden unlink module my-module  # unlinks my-module
     garden unlink module --all      # unlink all modules
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden unlink module [modules] [options]
@@ -3848,16 +3794,13 @@ Updates the remote sources declared in the project level `garden.yml` config fil
 
 Examples:
 
+    garden update-remote sources --parallel # update all remote sources in parallel mode
     garden update-remote sources            # update all remote sources
     garden update-remote sources my-source  # update remote source my-source
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
-
 #### Usage
 
-    garden update-remote sources [sources] 
+    garden update-remote sources [sources] [options]
 
 #### Arguments
 
@@ -3865,6 +3808,11 @@ Examples:
 | -------- | -------- | ----------- |
   | `sources` | No | The name(s) of the remote source(s) to update. Use comma as a separator to specify multiple sources.
 
+#### Options
+
+| Argument | Alias | Type | Description |
+| -------- | ----- | ---- | ----------- |
+  | `--parallel` |  | boolean | Allow git updates to happen in parallel. This will automatically reject any Git prompt, such as username / password.
 
 #### Outputs
 
@@ -3888,16 +3836,13 @@ in their `garden.yml` config that points to a remote repository.
 
 Examples:
 
+    garden update-remote modules --parallel # update all remote modules in parallel mode
     garden update-remote modules            # update all remote modules in the project
     garden update-remote modules my-module  # update remote module my-module
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
-
 #### Usage
 
-    garden update-remote modules [modules] 
+    garden update-remote modules [modules] [options]
 
 #### Arguments
 
@@ -3905,6 +3850,11 @@ Examples:
 | -------- | -------- | ----------- |
   | `modules` | No | The name(s) of the remote module(s) to update. Use comma as a separator to specify multiple modules.
 
+#### Options
+
+| Argument | Alias | Type | Description |
+| -------- | ----- | ---- | ----------- |
+  | `--parallel` |  | boolean | Allow git updates to happen in parallel. This will automatically reject any Git prompt, such as username / password.
 
 #### Outputs
 
@@ -3925,16 +3875,18 @@ sources:
 
 Examples:
 
-    garden update-remote all # update all remote sources and modules in the project
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| Yes |                                                  |
+    garden update-remote all --parallel # update all remote sources and modules in the project in parallel mode
+    garden update-remote all            # update all remote sources and modules in the project
 
 #### Usage
 
-    garden update-remote all 
+    garden update-remote all [options]
 
+#### Options
+
+| Argument | Alias | Type | Description |
+| -------- | ----- | ---- | ----------- |
+  | `--parallel` |  | boolean | Allow git updates to happen in parallel. This will automatically reject any Git prompt, such as username / password.
 
 #### Outputs
 
@@ -3971,10 +3923,6 @@ Examples:
     garden util fetch-tools        # fetch for just the current project/env
     garden util fetch-tools --all  # fetch for all registered providers
 
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
-
 #### Usage
 
     garden util fetch-tools [options]
@@ -3991,10 +3939,6 @@ Examples:
 **Hide a specific warning message.**
 
 Hides the specified warning message. The command and key is generally provided along with displayed warning messages.
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 
@@ -4013,10 +3957,6 @@ Hides the specified warning message. The command and key is generally provided a
 **Check your garden configuration for errors.**
 
 Throws an error and exits with code 1 if something's not right in your garden.yml files.
-
-| Supported in workflows |   |
-| ---------------------- |---|
-| No |                                                  |
 
 #### Usage
 

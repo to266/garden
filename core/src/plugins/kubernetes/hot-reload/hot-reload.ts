@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,7 +7,7 @@
  */
 
 import { ContainerModule } from "../../container/config"
-import { RuntimeError, ConfigurationError } from "../../../exceptions"
+import { ConfigurationError, RuntimeError } from "../../../exceptions"
 import { gardenAnnotationKey } from "../../../util/string"
 import { sortBy } from "lodash"
 import { LogEntry } from "../../../logger/log-entry"
@@ -25,11 +25,12 @@ import { getManifests } from "../kubernetes-module/common"
 import { KubernetesModule, KubernetesService } from "../kubernetes-module/config"
 import { getHotReloadSpec, syncToService } from "./helpers"
 import { GardenModule } from "../../../types/module"
+import { isConfiguredForHotReloading } from "../status/status"
 
-export type HotReloadableResource = KubernetesWorkload | KubernetesPod
-export type HotReloadableKind = "Deployment" | "DaemonSet" | "StatefulSet"
+export type SyncableResource = KubernetesWorkload | KubernetesPod
+export type SyncableKind = "Deployment" | "DaemonSet" | "StatefulSet"
 
-export const hotReloadableKinds: string[] = ["Deployment", "DaemonSet", "StatefulSet"]
+export const syncableKinds: string[] = ["Deployment", "DaemonSet", "StatefulSet"]
 
 /**
  * The hot reload action handler for helm charts and kubernetes modules.
@@ -62,6 +63,7 @@ export async function hotReloadK8s({
       module: service.module,
       devMode: false,
       hotReload: true,
+      localMode: false,
       log,
       version: service.version,
     })
@@ -127,6 +129,7 @@ export async function hotReloadContainer({
     namespace,
     enableDevMode: false,
     enableHotReload: true,
+    enableLocalMode: false,
     production: k8sCtx.production,
     log,
     blueGreen: provider.config.deploymentStrategy === "blue-green",
@@ -142,7 +145,7 @@ export async function hotReloadContainer({
     },
   })
 
-  const list = res.items.filter((r) => r.metadata.annotations![gardenAnnotationKey("hot-reload")] === "true")
+  const list = res.items.filter((r) => isConfiguredForHotReloading(r))
 
   if (list.length === 0) {
     throw new RuntimeError(`Unable to find deployed instance of service ${service.name} with hot-reloading enabled`, {

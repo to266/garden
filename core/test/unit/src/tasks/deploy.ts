@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -32,7 +32,7 @@ describe("DeployTask", () => {
   before(async () => {
     tmpDir = await tmp.dir({ unsafeCleanup: true })
 
-    await execa("git", ["init"], { cwd: tmpDir.path })
+    await execa("git", ["init", "--initial-branch=main"], { cwd: tmpDir.path })
 
     config = {
       apiVersion: DEFAULT_API_VERSION,
@@ -103,11 +103,20 @@ describe("DeployTask", () => {
         serviceConfigs: [
           {
             name: "test-service",
-            dependencies: ["test-task"],
+            dependencies: ["dep-service", "test-task"],
             disabled: false,
             hotReloadable: false,
             spec: {
               log: "${runtime.tasks.test-task.outputs.log}",
+            },
+          },
+          {
+            name: "dep-service",
+            dependencies: [],
+            disabled: false,
+            hotReloadable: false,
+            spec: {
+              log: "apples and pears",
             },
           },
         ],
@@ -149,6 +158,7 @@ describe("DeployTask", () => {
         log: garden.log,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       expect((await forcedDeployTask.resolveDependencies()).find((dep) => dep.type === "task")!.force).to.be.false
@@ -163,6 +173,7 @@ describe("DeployTask", () => {
         log: garden.log,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       expect((await unforcedDeployTask.resolveDependencies()).find((dep) => dep.type === "task")!.force).to.be.false
@@ -177,9 +188,33 @@ describe("DeployTask", () => {
         log: garden.log,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       expect((await deployTaskFromWatch.resolveDependencies()).find((dep) => dep.type === "task")!.force).to.be.false
+    })
+
+    context("when skipRuntimeDependencies = true", () => {
+      it("doesn't return deploy or task dependencies", async () => {
+        const testService = graph.getService("test-service")
+
+        const deployTask = new DeployTask({
+          garden,
+          graph,
+          service: testService,
+          force: true,
+          forceBuild: false,
+          fromWatch: false,
+          log: garden.log,
+          skipRuntimeDependencies: true, // <-----
+          devModeServiceNames: [],
+          hotReloadServiceNames: [],
+          localModeServiceNames: [],
+        })
+
+        const deps = await deployTask.resolveDependencies()
+        expect(deps.find((dep) => dep.type === "deploy" || dep.type === "task")).to.be.undefined
+      })
     })
   })
 
@@ -196,6 +231,7 @@ describe("DeployTask", () => {
         log: garden.log,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       const result = await garden.processTasks([deployTask], { throwOnError: true })

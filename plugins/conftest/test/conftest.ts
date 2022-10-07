@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -37,7 +37,7 @@ describe("conftest provider", () => {
   describe("testModule", () => {
     it("should format warnings and errors nicely", async () => {
       const garden = await makeTestGarden(projectRoot, {
-        plugins: [gardenPlugin],
+        plugins: [gardenPlugin()],
         config: projectConfig,
       })
 
@@ -53,6 +53,7 @@ describe("conftest provider", () => {
         forceBuild: false,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       const key = testTask.getKey()
@@ -70,7 +71,7 @@ describe("conftest provider", () => {
 
     it("should set success=false with a linting warning if testFailureThreshold=warn", async () => {
       const garden = await makeTestGarden(projectRoot, {
-        plugins: [gardenPlugin],
+        plugins: [gardenPlugin()],
         config: {
           ...projectConfig,
           providers: [{ name: "conftest", policyPath: "policy.rego", testFailureThreshold: "warn" }],
@@ -89,6 +90,7 @@ describe("conftest provider", () => {
         forceBuild: false,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       const key = testTask.getKey()
@@ -100,7 +102,7 @@ describe("conftest provider", () => {
 
     it("should set success=true with a linting warning if testFailureThreshold=error", async () => {
       const garden = await makeTestGarden(projectRoot, {
-        plugins: [gardenPlugin],
+        plugins: [gardenPlugin()],
         config: projectConfig,
       })
 
@@ -116,6 +118,7 @@ describe("conftest provider", () => {
         forceBuild: false,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       const key = testTask.getKey()
@@ -127,7 +130,7 @@ describe("conftest provider", () => {
 
     it("should set success=true with warnings and errors if testFailureThreshold=none", async () => {
       const garden = await makeTestGarden(projectRoot, {
-        plugins: [gardenPlugin],
+        plugins: [gardenPlugin()],
         config: {
           ...projectConfig,
           providers: [{ name: "conftest", policyPath: "policy.rego", testFailureThreshold: "none" }],
@@ -146,6 +149,7 @@ describe("conftest provider", () => {
         forceBuild: false,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       const key = testTask.getKey()

@@ -54,8 +54,11 @@ build:
           source:
 
           # POSIX-style path or filename to copy the directory or file(s), relative to the build directory.
-          # Defaults to to same as source path.
-          target: ''
+          # Defaults to the same as source path.
+          target:
+
+  # Maximum time in seconds to wait for build to finish.
+  timeout: 1200
 
   # The command to run to perform the build.
   #
@@ -67,7 +70,7 @@ build:
 description:
 
 # Set this to `true` to disable the module. You can use this with conditional template strings to disable modules
-# based on, for example, the current environment or other variables (e.g. `disabled: \${environment.name == "prod"}`).
+# based on, for example, the current environment or other variables (e.g. `disabled: ${environment.name == "prod"}`).
 # This can be handy when you only need certain modules for specific environments, e.g. only for development.
 #
 # Disabling a module means that any services, tasks and tests contained in it will not be deployed or run. It also
@@ -132,6 +135,11 @@ generateFiles:
     # directories, they will be automatically created if missing.
     targetPath:
 
+    # By default, Garden will attempt to resolve any Garden template strings in source files. Set this to false to
+    # skip resolving template strings. Note that this does not apply when setting the `value` field, since that's
+    # resolved earlier when parsing the configuration.
+    resolveTemplates: true
+
     # The desired file contents as a string.
     value:
 
@@ -139,6 +147,24 @@ generateFiles:
 # configuration and take precedence over project-scoped variables. They may reference project-scoped variables, and
 # generally use any template strings normally allowed when resolving modules.
 variables:
+
+# Specify a path (relative to the module root) to a file containing variables, that we apply on top of the
+# module-level `variables` field.
+#
+# The format of the files is determined by the configured file's extension:
+#
+# * `.env` - Standard "dotenv" format, as defined by [dotenv](https://github.com/motdotla/dotenv#rules).
+# * `.yaml`/`.yml` - YAML. The file must consist of a YAML document, which must be a map (dictionary). Keys may
+# contain any value type.
+# * `.json` - JSON. Must contain a single JSON _object_ (not an array).
+#
+# _NOTE: The default varfile format will change to YAML in Garden v0.13, since YAML allows for definition of nested
+# objects and arrays._
+#
+# To use different module-level varfiles in different environments, you can template in the environment name
+# to the varfile name, e.g. `varfile: "my-module.${environment.name}.env` (this assumes that the corresponding
+# varfiles exist).
+varfile:
 
 # If set to true, Garden will run the build command, services, tests, and tasks in the module source directory,
 # instead of in the Garden build directory (under .garden/build/<module-name>).
@@ -163,8 +189,8 @@ services:
     dependencies: []
 
     # Set this to `true` to disable the service. You can use this with conditional template strings to enable/disable
-    # services based on, for example, the current environment or other variables (e.g. `enabled: \${environment.name
-    # != "prod"}`). This can be handy when you only need certain services for specific environments, e.g. only for
+    # services based on, for example, the current environment or other variables (e.g. `enabled: ${environment.name !=
+    # "prod"}`). This can be handy when you only need certain services for specific environments, e.g. only for
     # development.
     #
     # Disabling a service means that it will not be deployed, and will also be ignored if it is declared as a runtime
@@ -198,8 +224,36 @@ services:
     # If the top level `local` directive is set to `true`, the command runs in the module source directory instead.
     cleanupCommand:
 
+    # The maximum duration (in seconds) to wait for a local script to exit.
+    timeout:
+
     # Environment variables to set when running the deploy and status commands.
     env: {}
+
+    devMode:
+      # The command to run to deploy the service in dev mode. When in dev mode, Garden assumes that
+      # the command starts a persistent process and does not wait for it return. The logs from the process
+      # can be retrieved via the `garden logs` command as usual.
+      #
+      # If a `statusCommand` is set, Garden will wait until it returns a zero exit code before considering
+      # the service ready. Otherwise it considers the service immediately ready.
+      #
+      # By default, the command is run inside the Garden build directory (under .garden/build/<module-name>).
+      # If the top level `local` directive is set to `true`, the command runs in the module source directory instead.
+      command:
+
+      # Optionally set a command to check the status of the service in dev mode. Garden will run the status command
+      # at an interval until it returns a zero exit code or times out.
+      #
+      # If no `statusCommand` is set, Garden will consider the service ready as soon as it has started the process.
+      #
+      # By default, the command is run inside the Garden build directory (under .garden/build/<module-name>).
+      # If the top level `local` directive is set to `true`, the command runs in the module source directory instead.
+      statusCommand:
+
+      # The maximum duration (in seconds) to wait for a for the `statusCommand` to return a zero
+      # exit code. Ignored if no `statusCommand` is set.
+      timeout: 10
 
 # A list of tasks that can be run in this module.
 tasks:
@@ -214,7 +268,7 @@ tasks:
     dependencies: []
 
     # Set this to `true` to disable the task. You can use this with conditional template strings to enable/disable
-    # tasks based on, for example, the current environment or other variables (e.g. `enabled: \${environment.name !=
+    # tasks based on, for example, the current environment or other variables (e.g. `enabled: ${environment.name !=
     # "prod"}`). This can be handy when you only want certain tasks to run in specific environments, e.g. only for
     # development.
     #
@@ -258,7 +312,7 @@ tests:
 
     # Set this to `true` to disable the test. You can use this with conditional template strings to
     # enable/disable tests based on, for example, the current environment or other variables (e.g.
-    # `enabled: \${environment.name != "prod"}`). This is handy when you only want certain tests to run in
+    # `enabled: ${environment.name != "prod"}`). This is handy when you only want certain tests to run in
     # specific environments, e.g. only during CI.
     disabled: false
 
@@ -390,11 +444,21 @@ POSIX-style path or filename of the directory or file(s) to copy to the target.
 [build](#build) > [dependencies](#builddependencies) > [copy](#builddependenciescopy) > target
 
 POSIX-style path or filename to copy the directory or file(s), relative to the build directory.
-Defaults to to same as source path.
+Defaults to the same as source path.
 
-| Type        | Default | Required |
-| ----------- | ------- | -------- |
-| `posixPath` | `""`    | No       |
+| Type        | Required |
+| ----------- | -------- |
+| `posixPath` | No       |
+
+### `build.timeout`
+
+[build](#build) > timeout
+
+Maximum time in seconds to wait for build to finish.
+
+| Type     | Default | Required |
+| -------- | ------- | -------- |
+| `number` | `1200`  | No       |
 
 ### `build.command[]`
 
@@ -430,7 +494,7 @@ A description of the module.
 
 ### `disabled`
 
-Set this to `true` to disable the module. You can use this with conditional template strings to disable modules based on, for example, the current environment or other variables (e.g. `disabled: \${environment.name == "prod"}`). This can be handy when you only need certain modules for specific environments, e.g. only for development.
+Set this to `true` to disable the module. You can use this with conditional template strings to disable modules based on, for example, the current environment or other variables (e.g. `disabled: ${environment.name == "prod"}`). This can be handy when you only need certain modules for specific environments, e.g. only for development.
 
 Disabling a module means that any services, tasks and tests contained in it will not be deployed or run. It also means that the module is not built _unless_ it is declared as a build dependency by another enabled module (in which case building this module is necessary for the dependant to be built).
 
@@ -486,9 +550,9 @@ A remote repository URL. Currently only supports git servers. Must contain a has
 
 Garden will import the repository source code into this module, but read the module's config from the local garden.yml file.
 
-| Type              | Required |
-| ----------------- | -------- |
-| `gitUrl | string` | No       |
+| Type               | Required |
+| ------------------ | -------- |
+| `gitUrl \| string` | No       |
 
 Example:
 
@@ -535,6 +599,16 @@ Note that any existing file with the same name will be overwritten. If the path 
 | ----------- | -------- |
 | `posixPath` | Yes      |
 
+### `generateFiles[].resolveTemplates`
+
+[generateFiles](#generatefiles) > resolveTemplates
+
+By default, Garden will attempt to resolve any Garden template strings in source files. Set this to false to skip resolving template strings. Note that this does not apply when setting the `value` field, since that's resolved earlier when parsing the configuration.
+
+| Type      | Default | Required |
+| --------- | ------- | -------- |
+| `boolean` | `true`  | No       |
+
 ### `generateFiles[].value`
 
 [generateFiles](#generatefiles) > value
@@ -552,6 +626,33 @@ A map of variables scoped to this particular module. These are resolved before a
 | Type     | Required |
 | -------- | -------- |
 | `object` | No       |
+
+### `varfile`
+
+Specify a path (relative to the module root) to a file containing variables, that we apply on top of the
+module-level `variables` field.
+
+The format of the files is determined by the configured file's extension:
+
+* `.env` - Standard "dotenv" format, as defined by [dotenv](https://github.com/motdotla/dotenv#rules).
+* `.yaml`/`.yml` - YAML. The file must consist of a YAML document, which must be a map (dictionary). Keys may contain any value type.
+* `.json` - JSON. Must contain a single JSON _object_ (not an array).
+
+_NOTE: The default varfile format will change to YAML in Garden v0.13, since YAML allows for definition of nested objects and arrays._
+
+To use different module-level varfiles in different environments, you can template in the environment name
+to the varfile name, e.g. `varfile: "my-module.${environment.name}.env` (this assumes that the corresponding
+varfiles exist).
+
+| Type        | Required |
+| ----------- | -------- |
+| `posixPath` | No       |
+
+Example:
+
+```yaml
+varfile: "my-module.env"
+```
 
 ### `local`
 
@@ -605,7 +706,7 @@ The names of any services that this service depends on at runtime, and the names
 
 [services](#services) > disabled
 
-Set this to `true` to disable the service. You can use this with conditional template strings to enable/disable services based on, for example, the current environment or other variables (e.g. `enabled: \${environment.name != "prod"}`). This can be handy when you only need certain services for specific environments, e.g. only for development.
+Set this to `true` to disable the service. You can use this with conditional template strings to enable/disable services based on, for example, the current environment or other variables (e.g. `enabled: ${environment.name != "prod"}`). This can be handy when you only need certain services for specific environments, e.g. only for development.
 
 Disabling a service means that it will not be deployed, and will also be ignored if it is declared as a runtime dependency for another service, test or task.
 
@@ -659,6 +760,16 @@ If the top level `local` directive is set to `true`, the command runs in the mod
 | --------------- | -------- |
 | `array[string]` | No       |
 
+### `services[].timeout`
+
+[services](#services) > timeout
+
+The maximum duration (in seconds) to wait for a local script to exit.
+
+| Type     | Required |
+| -------- | -------- |
+| `number` | No       |
+
 ### `services[].env`
 
 [services](#services) > env
@@ -668,6 +779,59 @@ Environment variables to set when running the deploy and status commands.
 | Type     | Default | Required |
 | -------- | ------- | -------- |
 | `object` | `{}`    | No       |
+
+### `services[].devMode`
+
+[services](#services) > devMode
+
+| Type     | Required |
+| -------- | -------- |
+| `object` | No       |
+
+### `services[].devMode.command[]`
+
+[services](#services) > [devMode](#servicesdevmode) > command
+
+The command to run to deploy the service in dev mode. When in dev mode, Garden assumes that
+the command starts a persistent process and does not wait for it return. The logs from the process
+can be retrieved via the `garden logs` command as usual.
+
+If a `statusCommand` is set, Garden will wait until it returns a zero exit code before considering
+the service ready. Otherwise it considers the service immediately ready.
+
+By default, the command is run inside the Garden build directory (under .garden/build/<module-name>).
+If the top level `local` directive is set to `true`, the command runs in the module source directory instead.
+
+| Type            | Required |
+| --------------- | -------- |
+| `array[string]` | No       |
+
+### `services[].devMode.statusCommand[]`
+
+[services](#services) > [devMode](#servicesdevmode) > statusCommand
+
+Optionally set a command to check the status of the service in dev mode. Garden will run the status command
+at an interval until it returns a zero exit code or times out.
+
+If no `statusCommand` is set, Garden will consider the service ready as soon as it has started the process.
+
+By default, the command is run inside the Garden build directory (under .garden/build/<module-name>).
+If the top level `local` directive is set to `true`, the command runs in the module source directory instead.
+
+| Type            | Required |
+| --------------- | -------- |
+| `array[string]` | No       |
+
+### `services[].devMode.timeout`
+
+[services](#services) > [devMode](#servicesdevmode) > timeout
+
+The maximum duration (in seconds) to wait for a for the `statusCommand` to return a zero
+exit code. Ignored if no `statusCommand` is set.
+
+| Type     | Default | Required |
+| -------- | ------- | -------- |
+| `number` | `10`    | No       |
 
 ### `tasks[]`
 
@@ -711,7 +875,7 @@ The names of any tasks that must be executed, and the names of any services that
 
 [tasks](#tasks) > disabled
 
-Set this to `true` to disable the task. You can use this with conditional template strings to enable/disable tasks based on, for example, the current environment or other variables (e.g. `enabled: \${environment.name != "prod"}`). This can be handy when you only want certain tasks to run in specific environments, e.g. only for development.
+Set this to `true` to disable the task. You can use this with conditional template strings to enable/disable tasks based on, for example, the current environment or other variables (e.g. `enabled: ${environment.name != "prod"}`). This can be handy when you only want certain tasks to run in specific environments, e.g. only for development.
 
 Disabling a task means that it will not be run, and will also be ignored if it is declared as a runtime dependency for another service, test or task.
 
@@ -818,7 +982,7 @@ The names of any services that must be running, and the names of any tasks that 
 
 Set this to `true` to disable the test. You can use this with conditional template strings to
 enable/disable tests based on, for example, the current environment or other variables (e.g.
-`enabled: \${environment.name != "prod"}`). This is handy when you only want certain tests to run in
+`enabled: ${environment.name != "prod"}`). This is handy when you only want certain tests to run in
 specific environments, e.g. only during CI.
 
 | Type      | Default | Required |
@@ -942,9 +1106,9 @@ A map of all variables defined in the module.
 
 ### `${modules.<module-name>.var.<variable-name>}`
 
-| Type                                             |
-| ------------------------------------------------ |
-| `string | number | boolean | link | array[link]` |
+| Type                                                 |
+| ---------------------------------------------------- |
+| `string \| number \| boolean \| link \| array[link]` |
 
 ### `${modules.<module-name>.version}`
 

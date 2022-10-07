@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,7 +9,7 @@
 import { move } from "fs-extra"
 import tmp from "tmp-promise"
 import { HelmModule } from "./config"
-import { containsBuildSource, getChartPath, getBaseModule } from "./common"
+import { containsBuildSource, getBaseModule, getChartPath } from "./common"
 import { helm } from "./helm-cli"
 import { ConfigurationError } from "../../../exceptions"
 import { deline } from "../../../util/string"

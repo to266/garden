@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,7 +7,7 @@
  */
 
 import { KubeApi } from "./api"
-import { ProviderSecretRef, KubernetesPluginContext, KubernetesProvider } from "./config"
+import { ProviderSecretRef, KubernetesPluginContext } from "./config"
 import { ConfigurationError } from "../../exceptions"
 import { getAppNamespace } from "./namespace"
 import { GetSecretParams } from "../../types/plugin/provider/getSecret"
@@ -124,20 +124,20 @@ export async function ensureSecret(api: KubeApi, secretRef: ProviderSecretRef, t
 }
 
 /**
- * Prepare references to imagePullSecrets for use in Pod specs, and ensure they have been copied to the target
- * namespace.
+ * Prepare references to the secrets given by the array of ProviderSecretRefs passed in.
+ * These secrets will be copied to the given namespace if needed.
  */
-export async function prepareImagePullSecrets({
+export async function prepareSecrets({
   api,
-  provider,
   namespace,
+  secrets,
   log,
 }: {
   api: KubeApi
-  provider: KubernetesProvider
   namespace: string
+  secrets: Array<ProviderSecretRef>
   log: LogEntry
 }) {
-  await Promise.all(provider.config.imagePullSecrets.map((s) => ensureSecret(api, s, namespace, log)))
-  return provider.config.imagePullSecrets.map((s) => ({ name: s.name }))
+  await Promise.all(secrets.map((s) => ensureSecret(api, s, namespace, log)))
+  return secrets.map((s) => ({ name: s.name }))
 }

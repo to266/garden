@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -21,12 +21,19 @@ import { publishContainerModule } from "./publish"
 import { SuggestModulesParams, SuggestModulesResult } from "../../types/plugin/module/suggestModules"
 import { listDirectory } from "../../util/fs"
 import { dedent } from "../../util/string"
-import { getModuleTypeUrl } from "../../docs/common"
 import { Provider, GenericProviderConfig, providerConfigBaseSchema } from "../../config/provider"
 import { isSubdir } from "../../util/util"
+import { GetModuleOutputsParams } from "../../types/plugin/module/getModuleOutputs"
 
 export interface ContainerProviderConfig extends GenericProviderConfig {}
 export type ContainerProvider = Provider<ContainerProviderConfig>
+
+export interface ContainerModuleOutputs {
+  "local-image-name": string
+  "local-image-id": string
+  "deployment-image-name": string
+  "deployment-image-id": string
+}
 
 export const containerModuleOutputsSchema = () =>
   joi.object().keys({
@@ -140,6 +147,7 @@ export async function configureContainerModule({ log, moduleConfig }: ConfigureM
 
     for (const volume of spec.volumes) {
       if (volume.module) {
+        // TODO-G2: change this to validation instead, require explicit dependency
         moduleConfig.build.dependencies.push({ name: volume.module, copy: [] })
         spec.dependencies.push(volume.module)
       }
@@ -225,11 +233,33 @@ async function suggestModules({ name, path }: SuggestModulesParams): Promise<Sug
   }
 }
 
+export async function getContainerModuleOutputs({ moduleConfig, version }: GetModuleOutputsParams) {
+  const deploymentImageName = containerHelpers.getDeploymentImageName(moduleConfig, undefined)
+  const deploymentImageId = containerHelpers.getDeploymentImageId(moduleConfig, version, undefined)
+
+  // If there is no Dockerfile (i.e. we don't need to build anything) we use the image field directly.
+  // Otherwise we set the tag to the module version.
+  const hasDockerfile = containerHelpers.hasDockerfile(moduleConfig, version)
+  const localImageId =
+    moduleConfig.spec.image && !hasDockerfile
+      ? moduleConfig.spec.image
+      : containerHelpers.getLocalImageId(moduleConfig, version)
+
+  return {
+    outputs: {
+      "local-image-name": containerHelpers.getLocalImageName(moduleConfig),
+      "local-image-id": localImageId,
+      "deployment-image-name": deploymentImageName,
+      "deployment-image-id": deploymentImageId,
+    },
+  }
+}
+
 export const gardenPlugin = () =>
   createGardenPlugin({
     name: "container",
     docs: dedent`
-    Provides the [container](${getModuleTypeUrl("container")}) module type.
+    Provides the [container](../module-types/container.md) module type.
     _Note that this provider is currently automatically included, and you do not need to configure it in your project configuration._
   `,
     createModuleTypes: [
@@ -241,8 +271,8 @@ export const gardenPlugin = () =>
 
         Note that the runtime services have somewhat limited features in this module type. For example, you cannot
         specify replicas for redundancy, and various platform-specific options are not included. For those, look at
-        other module types like [helm](${getModuleTypeUrl("helm")}) or
-        [kubernetes](${getModuleTypeUrl("kubernetes")}).
+        other module types like [helm](./helm.md) or
+        [kubernetes](./kubernetes.md).
       `,
         moduleOutputsSchema: containerModuleOutputsSchema(),
         schema: containerModuleSpecSchema(),
@@ -253,20 +283,7 @@ export const gardenPlugin = () =>
           getBuildStatus: getContainerBuildStatus,
           build: buildContainerModule,
           publish: publishContainerModule,
-
-          async getModuleOutputs({ moduleConfig, version }) {
-            const deploymentImageName = containerHelpers.getDeploymentImageName(moduleConfig, undefined)
-            const deploymentImageId = containerHelpers.getDeploymentImageId(moduleConfig, version, undefined)
-
-            return {
-              outputs: {
-                "local-image-name": containerHelpers.getLocalImageName(moduleConfig),
-                "local-image-id": containerHelpers.getLocalImageId(moduleConfig, version),
-                "deployment-image-name": deploymentImageName,
-                "deployment-image-id": deploymentImageId,
-              },
-            }
-          },
+          getModuleOutputs: getContainerModuleOutputs,
 
           async hotReloadService(_: HotReloadServiceParams) {
             return {}
@@ -285,8 +302,18 @@ export const gardenPlugin = () =>
           {
             platform: "darwin",
             architecture: "amd64",
-            url: "https://download.docker.com/mac/static/stable/x86_64/docker-19.03.6.tgz",
-            sha256: "82d279c6a2df05c2bb628607f4c3eacb5a7447be6d5f2a2f65643fbb6ed2f9af",
+            url: "https://download.docker.com/mac/static/stable/x86_64/docker-20.10.9.tgz",
+            sha256: "f045f816579a96a45deef25aaf3fc116257b4fb5782b51265ad863dcae21f879",
+            extract: {
+              format: "tar",
+              targetPath: "docker/docker",
+            },
+          },
+          {
+            platform: "darwin",
+            architecture: "arm64",
+            url: "https://download.docker.com/mac/static/stable/aarch64/docker-20.10.9.tgz",
+            sha256: "e41cc3b53b9907ee038c7a1ab82c5961815241180fefb49359d820d629658e6b",
             extract: {
               format: "tar",
               targetPath: "docker/docker",
@@ -295,8 +322,8 @@ export const gardenPlugin = () =>
           {
             platform: "linux",
             architecture: "amd64",
-            url: "https://download.docker.com/linux/static/stable/x86_64/docker-19.03.6.tgz",
-            sha256: "34ff89ce917796594cd81149b1777d07786d297ffd0fef37a796b5897052f7cc",
+            url: "https://download.docker.com/linux/static/stable/x86_64/docker-20.10.9.tgz",
+            sha256: "caf74e54b58c0b38bb4d96c8f87665f29b684371c9a325562a3904b8c389995e",
             extract: {
               format: "tar",
               targetPath: "docker/docker",
@@ -306,8 +333,8 @@ export const gardenPlugin = () =>
             platform: "windows",
             architecture: "amd64",
             url:
-              "https://github.com/rgl/docker-ce-windows-binaries-vagrant/releases/download/v19.03.6/docker-19.03.6.zip",
-            sha256: "b4591baa2b7016af9ff3328a26146e4db3e6ce3fbe0503a7fd87363f29d63f5c",
+              "https://github.com/rgl/docker-ce-windows-binaries-vagrant/releases/download/v20.10.9/docker-20.10.9.zip",
+            sha256: "360ca42101d453022eea17747ae0328709c7512e71553b497b88b7242b9b0ee4",
             extract: {
               format: "zip",
               targetPath: "docker/docker.exe",

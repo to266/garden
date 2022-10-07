@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -11,7 +11,6 @@ import Bluebird = require("bluebird")
 import chalk from "chalk"
 import { fromPairs, mapValues, omit, pickBy, keyBy, uniqBy } from "lodash"
 import tmp from "tmp-promise"
-import cpy from "cpy"
 import normalizePath = require("normalize-path")
 
 import { PublishModuleParams, PublishModuleResult } from "./types/plugin/module/publishModule"
@@ -63,6 +62,9 @@ import {
   PluginActionDescriptions,
   ModuleActionHandler,
   ActionHandler,
+  TestActionParams,
+  TestActionHandlers,
+  TestActionOutputs,
 } from "./types/plugin/plugin"
 import { CleanupEnvironmentParams, CleanupEnvironmentResult } from "./types/plugin/provider/cleanupEnvironment"
 import { DeleteSecretParams, DeleteSecretResult } from "./types/plugin/provider/deleteSecret"
@@ -215,7 +217,7 @@ export class ActionRouter implements TypeGuard {
       actionType: "augmentGraph",
       pluginName,
       params: omit(params, ["pluginName"]),
-      defaultHandler: async () => ({ addBuildDependencies: [], addRuntimeDependencies: [], addModules: [] }),
+      defaultHandler: async () => ({ addRuntimeDependencies: [], addModules: [] }),
     })
   }
 
@@ -471,7 +473,7 @@ export class ActionRouter implements TypeGuard {
         })
       })
 
-      const result = await this.callModuleHandler({ params: { ...params, artifactsPath }, actionType: "testModule" })
+      const result = await this.callTestHandler({ params: { ...params, artifactsPath }, actionType: "testModule" })
 
       // Emit status
       this.garden.events.emit("testStatus", {
@@ -502,7 +504,7 @@ export class ActionRouter implements TypeGuard {
   async getTestResult<T extends GardenModule>(
     params: ModuleActionRouterParams<GetTestResultParams<T>>
   ): Promise<TestResult | null> {
-    const result = await this.callModuleHandler({
+    const result = await this.callTestHandler({
       params,
       actionType: "getTestResult",
       defaultHandler: async () => null,
@@ -616,7 +618,13 @@ export class ActionRouter implements TypeGuard {
     })
 
     const runtimeContext = emptyRuntimeContext
-    const status = await this.getServiceStatus({ ...params, runtimeContext, devMode: false, hotReload: false })
+    const status = await this.getServiceStatus({
+      ...params,
+      runtimeContext,
+      devMode: false,
+      hotReload: false,
+      localMode: false,
+    })
 
     if (status.state === "missing") {
       log.setSuccess({
@@ -805,6 +813,7 @@ export class ActionRouter implements TypeGuard {
           service,
           devModeServiceNames: [],
           hotReloadServiceNames: [],
+          localModeServiceNames: [],
         })
     )
     const results = await this.garden.processTasks(tasks, { throwOnError: true })
@@ -827,6 +836,7 @@ export class ActionRouter implements TypeGuard {
           fromWatch: false,
           devModeServiceNames: [],
           hotReloadServiceNames: [],
+          localModeServiceNames: [],
         })
     )
 
@@ -840,6 +850,7 @@ export class ActionRouter implements TypeGuard {
     const servicesLog = log.info({ msg: chalk.white("Deleting services..."), status: "active" })
 
     const services = graph.getServices({ names })
+    const deleteServiceNames = services.map((s) => s.name)
 
     const deleteResults = await this.garden.processTasks(
       services.map((service) => {
@@ -848,7 +859,7 @@ export class ActionRouter implements TypeGuard {
           graph,
           service,
           log: servicesLog,
-          includeDependants: true,
+          deleteServiceNames,
         })
       })
     )
@@ -878,7 +889,7 @@ export class ActionRouter implements TypeGuard {
     const providers = await this.garden.resolveProviders(log)
     await Bluebird.each(Object.values(providers), async (provider) => {
       await this.cleanupEnvironment({ pluginName: provider.name, log: envLog })
-      environmentStatuses[provider.name] = await this.getEnvironmentStatus({ pluginName: provider.name, log: envLog })
+      environmentStatuses[provider.name] = { ready: false, outputs: {} }
     })
 
     envLog.setSuccess()
@@ -901,6 +912,9 @@ export class ActionRouter implements TypeGuard {
    */
   private async copyArtifacts(log: LogEntry, artifactsPath: string, key: string) {
     let files: string[] = []
+
+    // Note: lazy-loading for startup performance
+    const cpy = require("cpy")
 
     try {
       files = await cpy("**/*", this.garden.artifactsPath, { cwd: artifactsPath, parents: true })
@@ -1110,6 +1124,71 @@ export class ActionRouter implements TypeGuard {
     }
   }
 
+  /**
+   * This is essentially the same as `callModuleHandler`, with the addition of runtime template string resolution for
+   * the requested test config.
+   */
+  private async callTestHandler<T extends keyof TestActionHandlers>({
+    params,
+    actionType,
+    defaultHandler,
+  }: {
+    params: ModuleActionRouterParams<TestActionParams[T]>
+    actionType: T
+    defaultHandler?: TestActionHandlers[T]
+  }): Promise<TestActionOutputs[T]> {
+    let { module, test, pluginName, log, graph } = params
+    const runtimeContext = params["runtimeContext"] as RuntimeContext | undefined
+
+    log.silly(`Getting '${actionType}' handler for module '${module.name}' (type '${module.type}')`)
+
+    const handler = await this.getModuleActionHandler({
+      moduleType: module.type,
+      actionType,
+      pluginName,
+      defaultHandler: defaultHandler as WrappedModuleAndRuntimeActionHandlers[T],
+    })
+
+    const providers = await this.garden.resolveProviders(log)
+    const templateContext = ModuleConfigContext.fromModule({
+      garden: this.garden,
+      resolvedProviders: providers,
+      module,
+      modules: graph.getModules(),
+      partialRuntimeResolution: false,
+    })
+
+    // Resolve ${runtime.*} template strings if needed.
+    const runtimeContextIsEmpty = runtimeContext
+      ? Object.keys(runtimeContext.envVars).length === 0 && runtimeContext.dependencies.length === 0
+      : true
+
+    if (!runtimeContextIsEmpty && getRuntimeTemplateReferences(module).length > 0) {
+      log.silly(`Resolving runtime template strings for test '${module.name}.${test.name}'`)
+
+      // Resolve the graph again (TODO: avoid this somehow!)
+      graph = await this.garden.getConfigGraph({ log, runtimeContext, emit: false })
+
+      // Resolve the test again
+      test = graph.getTest(module.name, test.name)
+
+      // Set allowPartial=false to ensure all required strings are resolved.
+      test.config = resolveTemplateStrings(test.config, templateContext, { allowPartial: false })
+    }
+
+    const handlerParams = {
+      ...(await this.commonParams(handler, params.log, templateContext, params.events)),
+      ...params,
+      test,
+      module: omit(module, ["_config"]),
+    }
+
+    log.silly(`Calling ${actionType} handler for module ${module.name}`)
+
+    // TODO: figure out why this doesn't compile without the function cast
+    return (<Function>handler)(handlerParams)
+  }
+
   private async callTaskHandler<T extends keyof TaskActionHandlers>({
     params,
     actionType,
@@ -1191,7 +1270,7 @@ export class ActionRouter implements TypeGuard {
       async (...args: any[]) => {
         const result = await handler.apply(plugin, args)
         if (result === undefined) {
-          throw new PluginError(`Got empty response from ${actionType} handler on ${pluginName}`, {
+          throw new PluginError(`Got empty response from ${actionType} handler on ${pluginName} provider`, {
             args,
             actionType,
             pluginName,
@@ -1223,11 +1302,14 @@ export class ActionRouter implements TypeGuard {
       <ModuleActionHandlers[T]>(async (...args: any[]) => {
         const result = await handler.apply(plugin, args)
         if (result === undefined) {
-          throw new PluginError(`Got empty response from ${moduleType}.${actionType} handler on ${pluginName}`, {
-            args,
-            actionType,
-            pluginName,
-          })
+          throw new PluginError(
+            `Got empty response from ${moduleType}.${actionType} handler on ${pluginName} provider`,
+            {
+              args,
+              actionType,
+              pluginName,
+            }
+          )
         }
         return validateSchema(result, schema, {
           context: `${actionType} ${moduleType} output from provider ${pluginName}`,
@@ -1248,7 +1330,7 @@ export class ActionRouter implements TypeGuard {
       handlers[actionType][moduleType] = {}
     }
 
-    this.moduleActionHandlers[actionType][moduleType][pluginName] = wrapped
+    this.moduleActionHandlers[actionType][moduleType][pluginName] = <any>wrapped
   }
 
   /**
@@ -1472,6 +1554,10 @@ type WrappedServiceActionHandlers<T extends GardenModule = GardenModule> = {
   [P in keyof ServiceActionParams<T>]: WrappedModuleActionHandler<ServiceActionParams<T>[P], ServiceActionOutputs[P]>
 }
 
+type WrappedTestActionHandlers<T extends GardenModule = GardenModule> = {
+  [P in keyof TestActionParams<T>]: WrappedModuleActionHandler<TestActionParams<T>[P], TestActionOutputs[P]>
+}
+
 type WrappedTaskActionHandlers<T extends GardenModule = GardenModule> = {
   [P in keyof TaskActionParams<T>]: WrappedModuleActionHandler<TaskActionParams<T>[P], TaskActionOutputs[P]>
 }
@@ -1482,6 +1568,7 @@ type WrappedModuleActionHandlers<T extends GardenModule = GardenModule> = {
 
 type WrappedModuleAndRuntimeActionHandlers<T extends GardenModule = GardenModule> = WrappedModuleActionHandlers<T> &
   WrappedServiceActionHandlers<T> &
+  WrappedTestActionHandlers<T> &
   WrappedTaskActionHandlers<T>
 
 type WrappedPluginActionHandlers = {

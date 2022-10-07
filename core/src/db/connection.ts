@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,15 +7,24 @@
  */
 
 import { join } from "path"
-import { Connection, getConnectionManager, ConnectionOptions } from "typeorm-with-better-sqlite3"
+import type { Connection, ConnectionOptions } from "typeorm-with-better-sqlite3"
 import { gardenEnv } from "../constants"
+import { profileAsync } from "../util/profiling"
 
 let connection: Connection
 
+const connectionName = "default"
 const databasePath = join(gardenEnv.GARDEN_DB_DIR, "db")
 
 // Note: This function needs to be synchronous to work with the typeorm Active Record pattern (see ./base-entity.ts)
 export function getConnection(): Connection {
+  // Note: lazy-loading for startup performance
+  const { getConnectionManager } = require("typeorm-with-better-sqlite3")
+
+  if (!connection && getConnectionManager().has(connectionName)) {
+    connection = getConnectionManager().get(connectionName)
+  }
+
   if (!connection) {
     const { LocalAddress } = require("./entities/local-address")
     const { ClientAuthToken } = require("./entities/client-auth-token")
@@ -26,6 +35,7 @@ export function getConnection(): Connection {
 
     // Prepare the connection (the ormconfig.json in the static dir is only used for the typeorm CLI during dev)
     const options: ConnectionOptions = {
+      name: connectionName,
       type: "better-sqlite3",
       database: databasePath,
       // IMPORTANT: All entities and migrations need to be manually referenced here because of how we
@@ -41,9 +51,9 @@ export function getConnection(): Connection {
   return connection
 }
 
-export async function ensureConnected() {
+export const ensureConnected = profileAsync(async function _ensureConnected() {
   const _connection = getConnection()
   if (!_connection.isConnected) {
     await _connection.connect()
   }
-}
+})

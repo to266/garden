@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -38,8 +38,12 @@ export const DEFAULT_TASK_TIMEOUT = 60 * 1000
 export type SupportedPlatform = "linux" | "darwin" | "win32"
 export const SUPPORTED_PLATFORMS: SupportedPlatform[] = ["linux", "darwin", "win32"]
 
-export const SEGMENT_DEV_API_KEY = "D3DUZ3lBSDO3krnuIO7eYDdtlDAjooKW"
-export const SEGMENT_PROD_API_KEY = "b6ovUD9A0YjQqT3ZWetWUbuZ9OmGxKMa"
+export type SupportedArchitecture = "x64" | "arm64"
+export const SUPPORTED_ARCHITECTURES: SupportedArchitecture[] = ["x64", "arm64"]
+
+// These keys aren't sensitive, so we ask GitGuardian to ignore them.
+export const SEGMENT_DEV_API_KEY = "D3DUZ3lBSDO3krnuIO7eYDdtlDAjooKW" // ggignore
+export const SEGMENT_PROD_API_KEY = "b6ovUD9A0YjQqT3ZWetWUbuZ9OmGxKMa" // ggignore
 
 export const DOCS_BASE_URL = "https://docs.garden.io"
 export const VERSION_CHECK_URL = "https://get.garden.io/version"
@@ -50,7 +54,7 @@ export const VERSION_CHECK_URL = "https://get.garden.io/version"
  * We set this up as a map to facilitate overriding values in tests.
  */
 export const gardenEnv = {
-  ANALYTICS_DEV: env.get("ANALYTICS_DEV").required(false).asString(),
+  ANALYTICS_DEV: env.get("ANALYTICS_DEV").required(false).asBool(),
   GARDEN_AUTH_TOKEN: env.get("GARDEN_AUTH_TOKEN").required(false).asString(),
   GARDEN_CACHE_TTL: env.get("GARDEN_CACHE_TTL").required(false).asInt(),
   GARDEN_DB_DIR: env.get("GARDEN_DB_DIR").required(false).default(GARDEN_GLOBAL_PATH).asString(),
@@ -60,12 +64,14 @@ export const gardenEnv = {
   GARDEN_ENABLE_PROFILING: env.get("GARDEN_ENABLE_PROFILING").required(false).asBool(),
   GARDEN_ENVIRONMENT: env.get("GARDEN_ENVIRONMENT").required(false).asString(),
   GARDEN_EXPERIMENTAL_BUILD_STAGE: env.get("GARDEN_EXPERIMENTAL_BUILD_STAGE").required(false).asBool(),
+  GARDEN_GE_SCHEDULED: env.get("GARDEN_GE_SCHEDULED").required(false).asBool(),
   GARDEN_K8S_BUILD_SYNC_MODE: env.get("GARDEN_K8S_BUILD_SYNC_MODE").required(false).default("rsync").asString(),
   GARDEN_LEGACY_BUILD_STAGE: env.get("GARDEN_LEGACY_BUILD_STAGE").required(false).asBool(),
   GARDEN_LOG_LEVEL: env.get("GARDEN_LOG_LEVEL").required(false).asString(),
   GARDEN_LOGGER_TYPE: env.get("GARDEN_LOGGER_TYPE").required(false).asString(),
-  GARDEN_GE_SCHEDULED: env.get("GARDEN_GE_SCHEDULED").required(false).asBool(),
+  GARDEN_PROXY_DEFAULT_ADDRESS: env.get("GARDEN_PROXY_DEFAULT_ADDRESS").required(false).asString(),
   GARDEN_SERVER_PORT: env.get("GARDEN_SERVER_PORT").required(false).asPortNumber(),
+  GARDEN_SERVER_HOSTNAME: env.get("GARDEN_SERVER_HOSTNAME").required(false).asUrlString(),
   GARDEN_SKIP_TESTS: env.get("GARDEN_SKIP_TESTS").required(false).default("").asString(),
   GARDEN_HARD_CONCURRENCY_LIMIT: env.get("GARDEN_HARD_CONCURRENCY_LIMIT").required(false).default(50).asInt(),
   GARDEN_TASK_CONCURRENCY_LIMIT: env.get("GARDEN_TASK_CONCURRENCY_LIMIT").required(false).default(6).asInt(),

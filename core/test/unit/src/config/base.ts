@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,7 +7,7 @@
  */
 
 import { expect } from "chai"
-import { loadConfigResources, findProjectConfig } from "../../../../src/config/base"
+import { loadConfigResources, findProjectConfig, prepareModuleResource } from "../../../../src/config/base"
 import { resolve, join } from "path"
 import { dataDir, expectError, getDataDir } from "../../../helpers"
 import { DEFAULT_API_VERSION } from "../../../../src/constants"
@@ -97,10 +97,7 @@ describe("loadConfigResources", () => {
             name: "other",
           },
         ],
-        providers: [
-          { name: "test-plugin", environments: ["local"] },
-          { name: "test-plugin-b", environments: ["local"] },
-        ],
+        providers: [{ name: "test-plugin" }, { name: "test-plugin-b", environments: ["local"] }],
         outputs: [
           {
             name: "taskName",
@@ -133,6 +130,7 @@ describe("loadConfigResources", () => {
         build: { dependencies: [] },
         path: modulePathA,
         variables: { msg: "OK" },
+        varfile: undefined,
 
         spec: {
           build: {
@@ -144,6 +142,10 @@ describe("loadConfigResources", () => {
             {
               name: "task-a",
               command: ["echo", "${var.msg}"],
+            },
+            {
+              name: "task-a2",
+              command: ["echo", "${environment.name}-${var.msg}"],
             },
           ],
           tests: [
@@ -276,6 +278,7 @@ describe("loadConfigResources", () => {
         testConfigs: [],
         taskConfigs: [],
         variables: undefined,
+        varfile: undefined,
       },
     ])
   })
@@ -315,6 +318,7 @@ describe("loadConfigResources", () => {
         testConfigs: [],
         taskConfigs: [],
         variables: undefined,
+        varfile: undefined,
       },
       {
         apiVersion: "garden.io/v0",
@@ -344,6 +348,7 @@ describe("loadConfigResources", () => {
         testConfigs: [],
         taskConfigs: [],
         variables: undefined,
+        varfile: undefined,
       },
     ])
   })
@@ -388,6 +393,19 @@ describe("loadConfigResources", () => {
         path,
         configPath,
       },
+    ])
+  })
+})
+
+describe("prepareModuleResource", () => {
+  it("should normalize build dependencies", async () => {
+    const moduleConfigPath = resolve(modulePathA, "garden.yml")
+    const parsed: any = (await loadConfigResources(projectPathA, moduleConfigPath))[0]
+    parsed.build!.dependencies = [{ name: "apple" }, "banana", null]
+    const prepared = prepareModuleResource(parsed, moduleConfigPath, projectPathA)
+    expect(prepared.build!.dependencies).to.eql([
+      { name: "apple", copy: [] },
+      { name: "banana", copy: [] },
     ])
   })
 })

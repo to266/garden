@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -15,6 +15,7 @@ import { ServiceLogEntry } from "@garden-io/core/build/src/types/plugin/service/
 import { CommandResult } from "@garden-io/core/build/src/commands/base"
 import { ConfigDump } from "@garden-io/core/build/src/garden"
 import { StatusCommandResult } from "@garden-io/core/build/src/commands/get/get-status"
+import { getAuthKey } from "../util/helpers"
 
 export interface ApiRequest {
   command: string
@@ -64,7 +65,8 @@ export async function fetchTestResult({ name, moduleName }: FetchTestResultParam
 async function apiCommand<T>(command: string, parameters: {} = {}): Promise<T> {
   const url = "/api"
   const method = "POST"
-  const headers = { "Content-Type": "application/json" }
+  const headers = { "Content-Type": "application/json", "x-access-auth-token": getAuthKey() }
+
   const data: ApiRequest = { command, parameters }
 
   const res = await axios.request<CommandResult<T>>({ url, method, headers, data })

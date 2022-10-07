@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,30 +7,24 @@
  */
 
 import td from "testdouble"
-import Bluebird = require("bluebird")
-import { resolve, join } from "path"
-import { extend, intersection, pick } from "lodash"
-import { remove, readdirSync, existsSync, copy, mkdirp, pathExists, truncate } from "fs-extra"
-import execa = require("execa")
+import { join, relative, resolve } from "path"
+import { extend, intersection, mapValues, pick } from "lodash"
+import { copy, ensureDir, mkdirp, pathExists, remove, truncate } from "fs-extra"
 
-import { containerModuleSpecSchema, containerTestSchema, containerTaskSchema } from "../src/plugins/container/config"
-import { testExecModule, buildExecModule, execBuildSpecSchema } from "../src/plugins/exec"
-import { joiArray, joi } from "../src/config/common"
+import { containerModuleSpecSchema, containerTaskSchema, containerTestSchema } from "../src/plugins/container/config"
+import { buildExecModule, execBuildSpecSchema, testExecModule } from "../src/plugins/exec/exec"
+import { joi, joiArray } from "../src/config/common"
 import {
-  PluginActionHandlers,
   createGardenPlugin,
-  RegisterPluginParam,
   ModuleAndRuntimeActionHandlers,
+  PluginActionHandlers,
+  RegisterPluginParam,
 } from "../src/types/plugin/plugin"
-import { Garden } from "../src/garden"
+import { Garden, GardenOpts } from "../src/garden"
 import { ModuleConfig } from "../src/config/module"
-import { mapValues, fromPairs } from "lodash"
 import { ModuleVersion } from "../src/vcs/vcs"
-import { GARDEN_CORE_ROOT, LOCAL_CONFIG_FILENAME, DEFAULT_API_VERSION, gardenEnv } from "../src/constants"
-import { isPromise, uuidv4 } from "../src/util/util"
-import { LogEntry } from "../src/logger/log-entry"
-import timekeeper = require("timekeeper")
-import { ParameterValues, globalOptions, GlobalOptions, Parameters } from "../src/cli/params"
+import { DEFAULT_API_VERSION, GARDEN_CORE_ROOT, gardenEnv, LOCAL_CONFIG_FILENAME } from "../src/constants"
+import { globalOptions, GlobalOptions, Parameters, ParameterValues } from "../src/cli/params"
 import { RunModuleParams } from "../src/types/plugin/module/runModule"
 import { ConfigureModuleParams } from "../src/types/plugin/module/configure"
 import { RunServiceParams } from "../src/types/plugin/service/runService"
@@ -38,21 +32,27 @@ import { RunResult } from "../src/types/plugin/base"
 import { ExternalSourceType, getRemoteSourceRelPath, hashRepoUrl } from "../src/util/ext-source-util"
 import { ActionRouter } from "../src/actions"
 import { CommandParams, ProcessCommandResult } from "../src/commands/base"
-import stripAnsi from "strip-ansi"
 import { RunTaskParams, RunTaskResult } from "../src/types/plugin/task/runTask"
 import { SuiteFunction, TestFunction } from "mocha"
-import { GardenError } from "../src/exceptions"
 import { AnalyticsGlobalConfig } from "../src/config-store"
-import { TestGarden, EventLogEntry, TestGardenOpts } from "../src/util/testing"
+import { EventLogEntry, TestGarden, TestGardenOpts } from "../src/util/testing"
 import { Logger, LogLevel } from "../src/logger/logger"
 import { ExecInServiceParams, ExecInServiceResult } from "../src/types/plugin/service/execInService"
 import { ClientAuthToken } from "../src/db/entities/client-auth-token"
+import { GardenCli } from "../src/cli/cli"
+import { profileAsync } from "../src/util/profiling"
+import { makeTempDir } from "../src/util/fs"
+import { DirectoryResult } from "tmp-promise"
+import { ConfigurationError } from "../src/exceptions"
+import { assert, expect } from "chai"
+import Bluebird = require("bluebird")
+import execa = require("execa")
+import timekeeper = require("timekeeper")
 
 export { TempDirectory, makeTempDir } from "../src/util/fs"
-export { TestGarden, TestError, TestEventBus } from "../src/util/testing"
+export { TestGarden, TestError, TestEventBus, expectError } from "../src/util/testing"
 
 export const dataDir = resolve(GARDEN_CORE_ROOT, "test", "data")
-export const examplesDir = resolve(GARDEN_CORE_ROOT, "..", "examples")
 export const testNow = new Date()
 export const testModuleVersionString = "v-1234512345"
 export const testModuleVersion: ModuleVersion = {
@@ -62,11 +62,15 @@ export const testModuleVersion: ModuleVersion = {
 }
 
 // All test projects use this git URL
-export const testGitUrl = "https://my-git-server.com/my-repo.git#master"
+export const testGitUrl = "https://my-git-server.com/my-repo.git#main"
 export const testGitUrlHash = hashRepoUrl(testGitUrl)
 
 export function getDataDir(...names: string[]) {
   return resolve(dataDir, ...names)
+}
+
+export function getExampleDir(name: string) {
+  return resolve(GARDEN_CORE_ROOT, "..", "examples", name)
 }
 
 export async function profileBlock(description: string, block: () => Promise<any>) {
@@ -94,11 +98,12 @@ async function runModule(params: RunModuleParams): Promise<RunResult> {
 }
 
 export const projectRootA = getDataDir("test-project-a")
+export const projectRootBuildDependants = getDataDir("test-build-dependants")
 export const projectTestFailsRoot = getDataDir("test-project-fails")
 
-const testModuleTestSchema = () => containerTestSchema().keys({ command: joi.array().items(joi.string()) })
+const testModuleTestSchema = () => containerTestSchema().keys({ command: joi.sparseArray().items(joi.string()) })
 
-const testModuleTaskSchema = () => containerTaskSchema().keys({ command: joi.array().items(joi.string()) })
+const testModuleTaskSchema = () => containerTaskSchema().keys({ command: joi.sparseArray().items(joi.string()) })
 
 export const testModuleSpecSchema = () =>
   containerModuleSpecSchema().keys({
@@ -269,7 +274,7 @@ export const testPluginB = () => {
   return createGardenPlugin({
     ...base,
     name: "test-plugin-b",
-    dependencies: ["test-plugin"],
+    dependencies: [{ name: "test-plugin" }],
     createModuleTypes: [],
     // This doesn't actually change any behavior, except to use this provider instead of test-plugin
     extendModuleTypes: [
@@ -327,25 +332,91 @@ export const defaultModuleConfig: ModuleConfig = {
   taskConfigs: [],
 }
 
-export const makeTestModule = (params: Partial<ModuleConfig> = {}) => {
+export class TestGardenCli extends GardenCli {
+  async getGarden(workingDir: string, opts: GardenOpts) {
+    return makeTestGarden(workingDir, opts)
+  }
+}
+
+export const makeTestModule = (params: Partial<ModuleConfig> = {}): ModuleConfig => {
   return { ...defaultModuleConfig, ...params }
+}
+
+// Similar to `makeTestModule`, but uses a more minimal default config.
+export function makeModuleConfig(path: string, from: Partial<ModuleConfig>): ModuleConfig {
+  return {
+    apiVersion: DEFAULT_API_VERSION,
+    allowPublish: false,
+    build: { dependencies: [] },
+    disabled: false,
+    include: [],
+    name: "test",
+    path,
+    serviceConfigs: [],
+    taskConfigs: [],
+    spec: {},
+    testConfigs: [],
+    type: "test",
+    ...from,
+  }
 }
 
 export const testPlugins = () => [testPlugin(), testPluginB(), testPluginC()]
 
-export const makeTestGarden = async (projectRoot: string, opts: TestGardenOpts = {}): Promise<TestGarden> => {
-  opts = { sessionId: uuidv4(), ...opts }
+export const testProjectTempDirs: { [root: string]: DirectoryResult } = {}
+
+/**
+ * Create a garden instance for testing and setup a project if it doesn't exist already.
+ */
+export const makeTestGarden = profileAsync(async function _makeTestGarden(
+  projectRoot: string,
+  opts: TestGardenOpts = {}
+): Promise<TestGarden> {
+  let targetRoot = projectRoot
+
+  if (!opts.noTempDir) {
+    if (!testProjectTempDirs[projectRoot]) {
+      // Clone the project root to a temp directory
+      testProjectTempDirs[projectRoot] = await makeTempDir({ git: true })
+      targetRoot = join(testProjectTempDirs[projectRoot].path, "project")
+      await ensureDir(targetRoot)
+
+      await copy(projectRoot, targetRoot, {
+        // Don't copy the .garden directory if it exists
+        filter: (src: string) => {
+          const relSrc = relative(projectRoot, src)
+          return relSrc !== ".garden"
+        },
+      })
+
+      if (opts.config?.path) {
+        opts.config.path = targetRoot
+      }
+      if (opts.config?.configPath) {
+        throw new ConfigurationError(`Please don't set the configPath here :) Messes with the temp dir business.`, {})
+      }
+    }
+    targetRoot = join(testProjectTempDirs[projectRoot].path, "project")
+  }
+
   const plugins = [...testPlugins(), ...(opts.plugins || [])]
-  return TestGarden.factory(projectRoot, { ...opts, plugins })
-}
 
-export const makeTestGardenA = async (extraPlugins: RegisterPluginParam[] = []) => {
-  return makeTestGarden(projectRootA, { plugins: extraPlugins, forceRefresh: true })
-}
+  return TestGarden.factory(targetRoot, { ...opts, plugins })
+})
 
-export const makeTestGardenTasksFails = async (extraPlugins: RegisterPluginParam[] = []) => {
-  return makeTestGarden(projectTestFailsRoot, { plugins: extraPlugins })
-}
+export const makeTestGardenA = profileAsync(async function _makeTestGardenA(
+  extraPlugins: RegisterPluginParam[] = [],
+  opts?: TestGardenOpts
+) {
+  return makeTestGarden(projectRootA, { plugins: extraPlugins, forceRefresh: true, ...opts })
+})
+
+export const makeTestGardenBuildDependants = profileAsync(async function _makeTestGardenBuildDependants(
+  extraPlugins: RegisterPluginParam[] = [],
+  opts?: TestGardenOpts
+) {
+  return makeTestGarden(projectRootBuildDependants, { plugins: extraPlugins, forceRefresh: true, ...opts })
+})
 
 export async function stubAction<T extends keyof PluginActionHandlers>(
   garden: Garden,
@@ -373,68 +444,12 @@ export function stubModuleAction<T extends keyof ModuleAndRuntimeActionHandlers<
   return td.replace(actions["moduleActionHandlers"][actionType][moduleType], pluginName, handler)
 }
 
-export function expectError(fn: Function, typeOrCallback?: string | ((err: any) => void)) {
-  const handleError = (err: GardenError) => {
-    if (typeOrCallback === undefined) {
-      return true
-    } else if (typeof typeOrCallback === "function") {
-      typeOrCallback(err)
-      return true
-    } else {
-      if (!err.type) {
-        const newError = Error(`Expected GardenError with type ${typeOrCallback}, got: ${err}`)
-        newError.stack = err.stack
-        throw newError
-      }
-      if (err.type !== typeOrCallback) {
-        const newError = Error(`Expected ${typeOrCallback} error, got: ${err.type} error`)
-        newError.stack = err.stack
-        throw newError
-      }
-      return true
-    }
-  }
-
-  const handleNonError = (caught: boolean) => {
-    if (caught) {
-      return
-    } else if (typeof typeOrCallback === "string") {
-      throw new Error(`Expected ${typeOrCallback} error (got no error)`)
-    } else {
-      throw new Error(`Expected error (got no error)`)
-    }
-  }
-
-  try {
-    const res = fn()
-    if (isPromise(res)) {
-      return res
-        .then(() => false)
-        .catch(handleError)
-        .then((caught) => handleNonError(caught))
-    }
-  } catch (err) {
-    handleError(err)
-    return
-  }
-
-  return handleNonError(false)
-}
-
 export function taskResultOutputs(results: ProcessCommandResult) {
   return mapValues(results.graphResults, (r) => r && r.output)
 }
 
 export const cleanProject = async (gardenDirPath: string) => {
   return remove(gardenDirPath)
-}
-
-export function getExampleProjects() {
-  const names = readdirSync(examplesDir).filter((n) => {
-    const basePath = join(examplesDir, n)
-    return existsSync(join(basePath, "garden.yml")) || existsSync(join(basePath, "garden.yaml"))
-  })
-  return fromPairs(names.map((n) => [n, join(examplesDir, n)]))
 }
 
 export function withDefaultGlobalOpts<T extends object>(opts: T) {
@@ -467,24 +482,24 @@ export async function resetLocalConfig(gardenDirPath: string) {
  * Idempotently initializes the test-project-ext-project-sources project and returns
  * the Garden class.
  */
-export async function makeExtProjectSourcesGarden() {
+export async function makeExtProjectSourcesGarden(opts: TestGardenOpts = {}) {
   const projectRoot = resolve(dataDir, "test-project-ext-project-sources")
   // Borrow the external sources from here:
   const extSourcesRoot = resolve(dataDir, "test-project-local-project-sources")
   const sourceNames = ["source-a", "source-b", "source-c"]
-  return prepareRemoteGarden({ projectRoot, extSourcesRoot, sourceNames, type: "project" })
+  return prepareRemoteGarden({ projectRoot, extSourcesRoot, sourceNames, type: "project", opts })
 }
 
 /**
  * Idempotently initializes the test-project-ext-project-sources project and returns
  * the Garden class.
  */
-export async function makeExtModuleSourcesGarden() {
+export async function makeExtModuleSourcesGarden(opts: TestGardenOpts = {}) {
   const projectRoot = resolve(dataDir, "test-project-ext-module-sources")
   // Borrow the external sources from here:
   const extSourcesRoot = resolve(dataDir, "test-project-local-module-sources")
   const sourceNames = ["module-a", "module-b", "module-c"]
-  return prepareRemoteGarden({ projectRoot, extSourcesRoot, sourceNames, type: "module" })
+  return prepareRemoteGarden({ projectRoot, extSourcesRoot, sourceNames, type: "module", opts })
 }
 
 /**
@@ -496,22 +511,24 @@ async function prepareRemoteGarden({
   extSourcesRoot,
   sourceNames,
   type,
+  opts = {},
 }: {
   projectRoot: string
   extSourcesRoot: string
   sourceNames: string[]
   type: ExternalSourceType
+  opts?: TestGardenOpts
 }) {
-  const garden = await makeTestGarden(projectRoot)
-  const sourcesPath = join(projectRoot, ".garden", "sources", type)
+  const garden = await makeTestGarden(projectRoot, opts)
+  const sourcesPath = join(garden.projectRoot, ".garden", "sources", type)
 
   await mkdirp(sourcesPath)
   // Copy the sources to the `.garden/sources` dir and git init them
   await Bluebird.map(sourceNames, async (name) => {
     const remoteSourceRelPath = getRemoteSourceRelPath({ name, url: testGitUrl, sourceType: type })
-    const targetPath = join(projectRoot, ".garden", remoteSourceRelPath)
+    const targetPath = join(garden.projectRoot, ".garden", remoteSourceRelPath)
     await copy(join(extSourcesRoot, name), targetPath)
-    await execa("git", ["init"], { cwd: targetPath })
+    await execa("git", ["init", "--initial-branch=main"], { cwd: targetPath })
   })
 
   return garden
@@ -525,17 +542,6 @@ export function trimLineEnds(str: string) {
     .split("\n")
     .map((line) => line.trimRight())
     .join("\n")
-}
-
-/**
- * Retrieves all the child log entries from the given LogEntry and returns a list of all the messages,
- * stripped of ANSI characters. Useful to check if a particular message was logged.
- */
-export function getLogMessages(log: LogEntry, filter?: (log: LogEntry) => boolean) {
-  return log
-    .getChildEntries()
-    .filter((entry) => (filter ? filter(entry) : true))
-    .flatMap((entry) => entry.getMessages()?.map((state) => stripAnsi(state.msg || "")) || [])
 }
 
 const skipGroups = gardenEnv.GARDEN_SKIP_TESTS.split(" ")
@@ -603,7 +609,7 @@ export async function enableAnalytics(garden: TestGarden) {
   await garden.globalConfigStore.set(["analytics", "optedIn"], true)
   gardenEnv.GARDEN_DISABLE_ANALYTICS = false
   // Set the analytics mode to dev for good measure
-  gardenEnv.ANALYTICS_DEV = "1"
+  gardenEnv.ANALYTICS_DEV = true
 
   const resetConfig = async () => {
     if (originalAnalyticsConfig) {
@@ -665,5 +671,15 @@ export function makeCommandParams<T extends Parameters = {}, U extends Parameter
     footerLog: log,
     args,
     opts: withDefaultGlobalOpts(opts),
+  }
+}
+
+export async function assertAsyncError(action: () => Promise<any>, ...expectedErrorMessages: string[]) {
+  try {
+    await action()
+    assert.fail("Illegal test state. The action must have failed with error.")
+  } catch (err) {
+    const errorString = !!err.message ? err.message : err.toString()
+    expectedErrorMessages.forEach((msg) => expect(errorString).to.contain(msg))
   }
 }

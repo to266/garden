@@ -1,32 +1,51 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { trimEnd, omit, groupBy } from "lodash"
-import split2 = require("split2")
-import Bluebird = require("bluebird")
+import {
+  difference,
+  extend,
+  find,
+  fromPairs,
+  groupBy,
+  isArray,
+  isPlainObject,
+  mapValues,
+  memoize,
+  omit,
+  pick,
+  pickBy,
+  range,
+  some,
+  trimEnd,
+  uniqBy,
+} from "lodash"
 import { ResolvableProps } from "bluebird"
 import exitHook from "async-exit-hook"
 import Cryo from "cryo"
 import _spawn from "cross-spawn"
 import { readFile, writeFile } from "fs-extra"
-import { find, pick, difference, fromPairs, uniqBy } from "lodash"
-import { TimeoutError, ParameterError, RuntimeError, GardenError } from "../exceptions"
-import { isArray, isPlainObject, extend, mapValues, pickBy, range, some } from "lodash"
+import { GardenError, ParameterError, RuntimeError, TimeoutError } from "../exceptions"
 import highlight from "cli-highlight"
 import chalk from "chalk"
-import { safeDump, safeLoad, DumpOptions } from "js-yaml"
+import { DumpOptions, safeDump, safeLoad } from "js-yaml"
 import { createHash } from "crypto"
-import { tailString, dedent } from "./string"
-import { Writable, Readable } from "stream"
+import { dedent, tailString } from "./string"
+import { Readable, Writable } from "stream"
 import { LogEntry } from "../logger/log-entry"
-import execa = require("execa")
 import { PrimitiveMap } from "../config/common"
 import { isAbsolute, relative } from "path"
+import { getDefaultProfiler } from "./profiling"
+import { gardenEnv } from "../constants"
+import split2 = require("split2")
+import Bluebird = require("bluebird")
+import execa = require("execa")
+import { execSync } from "child_process"
+
 export { v4 as uuidv4 } from "uuid"
 
 export type HookCallback = (callback?: () => void) => void
@@ -68,6 +87,10 @@ export const testFlags = {
 export async function shutdown(code?: number) {
   // This is a good place to log exitHookNames if needed.
   if (!testFlags.disableShutdown) {
+    if (gardenEnv.GARDEN_ENABLE_PROFILING) {
+      // tslint:disable-next-line: no-console
+      console.log(getDefaultProfiler().report())
+    }
     process.exit(code)
   }
 }
@@ -80,6 +103,19 @@ export function registerCleanupFunction(name: string, func: HookCallback) {
 export function getPackageVersion(): string {
   const version = require("../../../package.json").version
   return version
+}
+
+/**
+ * Returns "Garden Cloud" if domain matches https://<some-subdomain>.app.garden,
+ * otherwise "Garden Enterprise".
+ *
+ * TODO: Return the distribution type from the API and store on the CloudApi class.
+ */
+export function getCloudDistributionName(domain: string) {
+  if (!domain.match(/^https:\/\/.+\.app\.garden$/i)) {
+    return "Garden Enterprise"
+  }
+  return "Garden Cloud"
 }
 
 export async function sleep(msec: number) {
@@ -156,7 +192,7 @@ export function makeErrorMsg({
   return msg
 }
 
-interface ExecOpts extends execa.Options {
+export interface ExecOpts extends execa.Options {
   stdout?: Writable
   stderr?: Writable
 }
@@ -321,13 +357,13 @@ export function spawn(cmd: string, args: string[], opts: SpawnOpts = {}) {
 
     proc.on("close", (code) => {
       _timeout && clearTimeout(_timeout)
-      result.code = code
+      result.code = code!
 
       if (code === 0 || ignoreError) {
         resolve(result)
       } else {
         const msg = makeErrorMsg({
-          code,
+          code: code!,
           cmd,
           args,
           output: result.all || result.stdout || result.stderr || "",
@@ -522,6 +558,10 @@ export function uniqByName<T extends ObjectWithName>(array: T[]): T[] {
   return uniqBy(array, (item) => item.name)
 }
 
+export function isDisjoint<T>(set1: Set<T>, set2: Set<T>): boolean {
+  return !some([...set1], (element) => set2.has(element))
+}
+
 /**
  * Returns an array of arrays, where the elements of a given array are the elements of items for which
  * isRelated returns true for one or more elements of its class.
@@ -529,21 +569,36 @@ export function uniqByName<T extends ObjectWithName>(array: T[]): T[] {
  * I.e. an element is related to at least one element of its class, transitively.
  */
 export function relationshipClasses<I>(items: I[], isRelated: (item1: I, item2: I) => boolean): I[][] {
-  const classes: I[][] = []
-  for (const item of items) {
-    let found = false
-    for (const classIndex of range(0, classes.length)) {
-      const cls = classes[classIndex]
-      if (cls && cls.length && some(cls, (classItem) => isRelated(classItem, item))) {
-        found = true
-        cls.push(item)
+  // We start with each item in its own class.
+  //
+  // We then keep looking for relationships/connections between classes and merging them when one is found,
+  // until no two classes have elements that are related to each other.
+  const classes: I[][] = items.map((i) => [i])
+
+  let didMerge = false
+  do {
+    didMerge = false
+    for (const classIndex1 of range(0, classes.length)) {
+      for (const classIndex2 of range(0, classes.length)) {
+        if (classIndex1 === classIndex2) {
+          continue
+        }
+        const c1 = classes[classIndex1]
+        const c2 = classes[classIndex2]
+        if (some(c1, (i1) => some(c2, (i2) => isRelated(i1, i2)))) {
+          // Then we merge c1 and c2.
+          didMerge = true
+          classes.splice(classIndex2, 1)
+          classes[classIndex1] = [...c1, ...c2]
+          break
+        }
+      }
+      if (didMerge) {
+        break
       }
     }
-
-    if (!found) {
-      classes.push([item])
-    }
-  }
+  } while (didMerge)
+  // Once this point is reached, no two classes are related to each other, so we can return them.
 
   return classes
 }
@@ -649,6 +704,29 @@ export function getArchitecture() {
   const arch = process.arch
   return archMap[arch] || arch
 }
+
+export const isDarwinARM = memoize(() => {
+  if (process.platform !== "darwin") {
+    return false
+  }
+
+  if (process.arch === "arm64") {
+    return true
+  } else if (process.arch === "x64") {
+    // detect rosetta on Apple M cpu family macs
+    // see also https://developer.apple.com/documentation/apple-silicon/about-the-rosetta-translation-environment
+    // We use execSync here, because this function is called in a constructor
+    // otherwise we'd make the function async and call `spawn`
+    try {
+      execSync("sysctl -n -q sysctl.proc_translated", { encoding: "utf-8" })
+    } catch (err) {
+      return false
+    }
+    return true
+  }
+
+  return false
+})
 
 export function getDurationMsec(start: Date, end: Date): number {
   return Math.round(end.getTime() - start.getTime())
@@ -764,4 +842,70 @@ export function duplicatesByKey(items: any[], key: string) {
   return Object.entries(grouped)
     .map(([value, duplicateItems]) => ({ value, duplicateItems }))
     .filter(({ duplicateItems }) => duplicateItems.length > 1)
+}
+
+export function isNotNull<T>(v: T | null): v is T {
+  return v !== null
+}
+
+/**
+ * Find and return the index of the given `slice` within `array`. Returns -1 if the slice is not found.
+ *
+ * Adapted from https://stackoverflow.com/posts/29426078/revisions
+ *
+ * @param array
+ * @param slice
+ */
+export function findSlice(array: any[], slice: any[], fromIndex = 0) {
+  let i = fromIndex
+  const sliceLength = slice.length
+  const l = array.length + 1 - sliceLength
+
+  loop: for (; i < l; i++) {
+    for (let j = 0; j < sliceLength; j++) {
+      if (array[i + j] !== slice[j]) {
+        continue loop
+      }
+    }
+    return i
+  }
+  return -1
+}
+
+/**
+ * Returns a copy of the given array, with the first instance (if any) of the given slice removed.
+ */
+export function removeSlice(array: any[], slice: any[]) {
+  const out = [...array]
+  const index = findSlice(array, slice)
+
+  if (index > -1) {
+    out.splice(index, slice.length)
+  }
+
+  return out
+}
+
+/**
+ * Prompt the user for input, using inquirer.
+ *
+ * Note: Wrapping inquirer here and requiring inline because it is surprisingly slow to import on load.
+ */
+export function userPrompt(params: {
+  name: string
+  message: string
+  type: "confirm" | "list" | "input"
+  default?: any
+  choices?: string[]
+  pageSize?: number
+}): Promise<any> {
+  return require("inquirer").prompt(params)
+}
+
+export function getGitHubIssueLink(title: string, type: "bug" | "feature-request") {
+  if (type === "feature-request") {
+    return `https://github.com/garden-io/garden/issues/new?assignees=&labels=feature+request&template=FEATURE_REQUEST.md&title=%5BFEATURE%5D%3A+${title}`
+  } else {
+    return `https://github.com/garden-io/garden/issues/new?assignees=&labels=&template=BUG_REPORT.md&title=${title}`
+  }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,7 +9,7 @@
 import { expect } from "chai"
 import { TestCommand } from "../../../../src/commands/test"
 import isSubset = require("is-subset")
-import { makeTestGardenA, taskResultOutputs, withDefaultGlobalOpts } from "../../../helpers"
+import { makeModuleConfig, makeTestGardenA, taskResultOutputs, withDefaultGlobalOpts } from "../../../helpers"
 import { ModuleConfig } from "../../../../src/config/module"
 
 describe("TestCommand", () => {
@@ -31,14 +31,18 @@ describe("TestCommand", () => {
         "force": true,
         "force-build": true,
         "watch": false,
+        "skip": [],
+        "skip-dependencies": false,
         "skip-dependants": false,
       }),
     })
 
     expect(command.outputsSchema().validate(result).error).to.be.undefined
 
+    const outputs = taskResultOutputs(result!)
+
     expect(
-      isSubset(taskResultOutputs(result!), {
+      isSubset(outputs, {
         "build.module-a": {
           fresh: true,
           buildLog: "A",
@@ -60,7 +64,8 @@ describe("TestCommand", () => {
           success: true,
           log: "OK",
         },
-      })
+      }),
+      `Got: ${JSON.stringify(outputs)}`
     ).to.be.true
 
     const { tests } = result!
@@ -162,6 +167,8 @@ describe("TestCommand", () => {
         "force": true,
         "force-build": true,
         "watch": false,
+        "skip": [],
+        "skip-dependencies": false,
         "skip-dependants": false,
       }),
     })
@@ -173,6 +180,58 @@ describe("TestCommand", () => {
           buildLog: "A",
         },
         "test.module-a.unit": {
+          success: true,
+          log: "OK",
+        },
+      })
+    ).to.be.true
+  })
+
+  it("should optionally skip tests by name", async () => {
+    const garden = await makeTestGardenA()
+    const log = garden.log
+
+    const { result } = await command.action({
+      garden,
+      log,
+      headerLog: log,
+      footerLog: log,
+      args: { modules: ["module-a"] },
+      opts: withDefaultGlobalOpts({
+        "name": undefined,
+        "force": true,
+        "force-build": true,
+        "watch": false,
+        "skip": ["int*"],
+        "skip-dependencies": false,
+        "skip-dependants": false,
+      }),
+    })
+
+    expect(
+      isSubset(taskResultOutputs(result!), {
+        "build.module-a": {
+          fresh: true,
+          buildLog: "A",
+        },
+        "test.module-a.integration": {
+          success: true,
+          log: "OK",
+        },
+        "test.module-c.integ": {
+          success: true,
+          log: "OK",
+        },
+      })
+    ).to.be.false
+
+    expect(
+      isSubset(taskResultOutputs(result!), {
+        "test.module-a.unit": {
+          success: true,
+          log: "OK",
+        },
+        "test.module-c.unit": {
           success: true,
           log: "OK",
         },
@@ -194,7 +253,9 @@ describe("TestCommand", () => {
         "name": ["int*"],
         "force": true,
         "force-build": true,
+        "skip": [],
         "watch": false,
+        "skip-dependencies": false,
         "skip-dependants": false,
       }),
     })
@@ -252,6 +313,8 @@ describe("TestCommand", () => {
         "force": true,
         "force-build": false,
         "watch": false,
+        "skip": [],
+        "skip-dependencies": false,
         "skip-dependants": false,
       }),
     })
@@ -289,6 +352,8 @@ describe("TestCommand", () => {
         "force": true,
         "force-build": false,
         "watch": false,
+        "skip": [],
+        "skip-dependencies": false,
         "skip-dependants": false,
       }),
     })
@@ -310,21 +375,83 @@ describe("TestCommand", () => {
     ])
   })
 
+  context("when --skip-dependencies is passed", () => {
+    it("should not process runtime dependencies", async () => {
+      const garden = await makeTestGardenA()
+      const log = garden.log
+
+      const moduleConfigs: ModuleConfig[] = [
+        makeModuleConfig(garden.projectRoot, {
+          name: "module-a",
+          include: [],
+          spec: {
+            services: [{ name: "service-a" }],
+            tests: [
+              { name: "unit", command: ["echo", "OK"] },
+              { name: "integration", command: ["echo", "OK"], dependencies: ["service-a"] },
+            ],
+            tasks: [],
+            build: { command: ["echo", "A"], dependencies: [] },
+          },
+        }),
+        makeModuleConfig(garden.projectRoot, {
+          name: "module-b",
+          include: [],
+          spec: {
+            services: [{ name: "service-b", dependencies: ["task-b"] }],
+            tests: [
+              { name: "unit", command: ["echo", "OK"] },
+              { name: "integration", command: ["echo", "OK"], dependencies: ["service-b"] },
+            ],
+            tasks: [{ command: ["echo", "A"], name: "task-b" }],
+            build: { command: ["echo", "A"], dependencies: [] },
+          },
+        }),
+      ]
+
+      garden.setModuleConfigs(moduleConfigs)
+
+      const { result, errors } = await command.action({
+        garden,
+        log,
+        headerLog: log,
+        footerLog: log,
+        args: { modules: ["module-a"] },
+        opts: withDefaultGlobalOpts({
+          "name": undefined,
+          "force": true,
+          "force-build": false,
+          "watch": false,
+          "skip": [],
+          "skip-dependencies": true, // <----
+          "skip-dependants": false,
+        }),
+      })
+
+      if (errors) {
+        throw errors[0]
+      }
+
+      expect(Object.keys(taskResultOutputs(result!)).sort()).to.eql([
+        "build.module-a",
+        // "deploy.service-a", // skipped
+        // "deploy.service-b", // skipped
+        "get-service-status.service-a",
+        "stage-build.module-a",
+        "test.module-a.integration",
+        "test.module-a.unit",
+      ])
+    })
+  })
+
   it("should skip dependant modules if --skip-dependants is passed", async () => {
     const garden = await makeTestGardenA()
     const log = garden.log
 
     const moduleConfigs: ModuleConfig[] = [
-      {
-        apiVersion: "garden.io/v0",
-        kind: "Module",
+      makeModuleConfig(garden.projectRoot, {
         name: "module-a",
         include: [],
-        build: { dependencies: [] },
-        path: garden.projectRoot,
-        serviceConfigs: [],
-        disabled: false,
-        allowPublish: false,
         spec: {
           services: [{ name: "service-a" }],
           tests: [
@@ -334,20 +461,10 @@ describe("TestCommand", () => {
           tasks: [],
           build: { command: ["echo", "A"], dependencies: [] },
         },
-        testConfigs: [],
-        type: "test",
-        taskConfigs: [],
-      },
-      {
-        apiVersion: "garden.io/v0",
-        kind: "Module",
+      }),
+      makeModuleConfig(garden.projectRoot, {
         name: "module-b",
         include: [],
-        build: { dependencies: [] },
-        path: garden.projectRoot,
-        serviceConfigs: [],
-        disabled: false,
-        allowPublish: false,
         spec: {
           services: [{ name: "service-b" }],
           tests: [
@@ -357,10 +474,7 @@ describe("TestCommand", () => {
           tasks: [],
           build: { command: ["echo", "A"], dependencies: [] },
         },
-        testConfigs: [],
-        type: "test",
-        taskConfigs: [],
-      },
+      }),
     ]
 
     garden.setModuleConfigs(moduleConfigs)
@@ -376,6 +490,8 @@ describe("TestCommand", () => {
         "force": true,
         "force-build": false,
         "watch": false,
+        "skip": [],
+        "skip-dependencies": false,
         "skip-dependants": true, // <----
       }),
     })

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -138,6 +138,15 @@ describe("util", () => {
       await exec("sh", ["-c", "echo hello 1>&2"], { stderr: createOutputStream(entry) })
 
       expect(entry.getLatestMessage().msg).to.equal(renderOutputStream("hello"))
+    })
+
+    it("should buffer outputs when piping to stream", async () => {
+      const logger = getLogger()
+      const entry = logger.placeholder()
+
+      const res = await exec("echo", ["hello"], { stdout: createOutputStream(entry) })
+
+      expect(res.stdout).to.equal("hello")
     })
 
     it("should throw a standardised error message on error", async () => {
@@ -332,11 +341,12 @@ describe("util", () => {
 
   describe("relationshipClasses", () => {
     it("should correctly partition related items", () => {
-      const items = ["ab", "b", "c", "a", "cd"]
+      const items = ["a", "b", "c", "d", "e", "f", "g", "ab", "bc", "cd", "de", "fg"]
       const isRelated = (s1: string, s2: string) => includes(s1, s2) || includes(s2, s1)
+      // There's no "ef" element, so ["f", "fg", "g"] should be disjoint from the rest.
       expect(relationshipClasses(items, isRelated)).to.eql([
-        ["ab", "b", "a"],
-        ["c", "cd"],
+        ["a", "ab", "b", "bc", "c", "cd", "d", "de", "e"],
+        ["f", "fg", "g"],
       ])
     })
 

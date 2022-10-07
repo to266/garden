@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,8 +7,8 @@
  */
 
 import chalk from "chalk"
-import { cloneDeep, flatten, last, merge, repeat, size } from "lodash"
-import { printHeader, getTerminalWidth, formatGardenError, renderMessageWithDivider } from "../../logger/util"
+import { cloneDeep, flatten, last, repeat, size } from "lodash"
+import { printHeader, getTerminalWidth, formatGardenErrorWithDetail, renderMessageWithDivider } from "../../logger/util"
 import { Command, CommandParams, CommandResult } from "../base"
 import { dedent, wordWrap, deline } from "../../util/string"
 import { Garden } from "../../garden"
@@ -29,10 +29,12 @@ import { getDurationMsec, toEnvVars } from "../../util/util"
 import { runScript } from "../../util/util"
 import { ExecaError } from "execa"
 import { LogLevel } from "../../logger/logger"
-import { registerWorkflowRun } from "../../enterprise/workflow-lifecycle"
+import { registerWorkflowRun } from "../../cloud/workflow-lifecycle"
 import { parseCliArgs, pickCommand, processCliArgs } from "../../cli/helpers"
-import { StringParameter } from "../../cli/params"
-import { getAllCommands } from "../commands"
+import { globalOptions, StringParameter } from "../../cli/params"
+import { getBuiltinCommands } from "../commands"
+import { getCustomCommands } from "../custom"
+import { GardenCli } from "../../cli/cli"
 
 const runWorkflowArgs = {
   workflow: new StringParameter({
@@ -68,7 +70,7 @@ export class RunWorkflowCommand extends Command<Args, {}> {
     printHeader(headerLog, `Running workflow ${chalk.white(args.workflow)}`, "runner")
   }
 
-  async action({ garden, log, args, opts }: CommandParams<Args, {}>): Promise<CommandResult<WorkflowRunOutput>> {
+  async action({ cli, garden, log, args, opts }: CommandParams<Args, {}>): Promise<CommandResult<WorkflowRunOutput>> {
     const outerLog = log.placeholder()
     // Prepare any configured files before continuing
     const workflow = await garden.getWorkflowConfig(args.workflow)
@@ -89,7 +91,6 @@ export class RunWorkflowCommand extends Command<Args, {}> {
     const steps = workflow.steps
     const allStepNames = steps.map((s, i) => getStepName(i, s.name))
     const startedAt = new Date().valueOf()
-    await maybeEmitStackGraphEvent(garden, log, workflow)
 
     const result: WorkflowRunOutput = {
       steps: {},
@@ -127,6 +128,7 @@ export class RunWorkflowCommand extends Command<Args, {}> {
 
       const inheritedOpts = cloneDeep(opts)
       const stepParams: RunStepParams = {
+        cli,
         garden,
         step,
         stepIndex: index,
@@ -150,9 +152,11 @@ export class RunWorkflowCommand extends Command<Args, {}> {
 
       const stepStartedAt = new Date()
 
+      const initSaveLogState = stepBodyLog.root.storeEntries
+      stepBodyLog.root.storeEntries = true
       try {
         if (step.command) {
-          step.command = resolveTemplateStrings(step.command, stepTemplateContext)
+          step.command = resolveTemplateStrings(step.command, stepTemplateContext).filter((arg) => !!arg)
           stepResult = await runStepCommand(stepParams)
         } else if (step.script) {
           step.script = resolveTemplateString(step.script, stepTemplateContext)
@@ -165,8 +169,7 @@ export class RunWorkflowCommand extends Command<Args, {}> {
         garden.events.emit("workflowStepError", getStepEndEvent(index, stepStartedAt))
         stepErrors[index] = [err]
         printStepDuration({ ...stepParams, success: false })
-        printResult({ startedAt, log: outerLog, workflow, success: false })
-        logErrors(outerLog, [err], index, steps.length, step.description)
+        logErrors(stepBodyLog, [err], index, steps.length, step.description)
         // There may be succeeding steps with `when: onError` or `when: always`, so we continue.
         continue
       }
@@ -179,8 +182,9 @@ export class RunWorkflowCommand extends Command<Args, {}> {
         outputs: stepResult.result || {},
         log: stepLog,
       }
+      stepBodyLog.root.storeEntries = initSaveLogState
 
-      if (stepResult.errors) {
+      if (stepResult.errors && stepResult.errors.length > 0) {
         garden.events.emit("workflowStepError", getStepEndEvent(index, stepStartedAt))
         logErrors(outerLog, stepResult.errors, index, steps.length, step.description)
         stepErrors[index] = stepResult.errors
@@ -195,7 +199,17 @@ export class RunWorkflowCommand extends Command<Args, {}> {
     if (size(stepErrors) > 0) {
       printResult({ startedAt, log: outerLog, workflow, success: false })
       garden.events.emit("workflowError", {})
-      return { result, errors: flatten(Object.values(stepErrors)) }
+      const errors = flatten(Object.values(stepErrors))
+      const finalError = opts.output
+        ? errors
+        : [
+            new Error(
+              `workflow failed with ${errors.length} ${
+                errors.length > 1 ? "errors" : "error"
+              }, see logs above for more info`
+            ),
+          ]
+      return { result, errors: finalError }
     }
 
     printResult({ startedAt, log: outerLog, workflow, success: true })
@@ -206,6 +220,7 @@ export class RunWorkflowCommand extends Command<Args, {}> {
 }
 
 export interface RunStepParams {
+  cli?: GardenCli
   garden: Garden
   outerLog: LogEntry
   headerLog: LogEntry
@@ -299,6 +314,7 @@ function printResult({
 }
 
 export async function runStepCommand({
+  cli,
   garden,
   bodyLog,
   footerLog,
@@ -306,34 +322,76 @@ export async function runStepCommand({
   inheritedOpts,
   step,
 }: RunStepCommandParams): Promise<CommandResult<any>> {
-  const { command, rest } = pickCommand(getAllCommands(), step.command!)
+  let rawArgs = step.command!
+
+  const builtinCommands = getBuiltinCommands()
+  let { command, rest, matchedPath } = pickCommand(builtinCommands, step.command!)
+
+  let args: CommandParams["args"] = {}
+  let opts = inheritedOpts
+
+  if (command) {
+    // Built-in command found
+    const parsedArgs = parseCliArgs({ stringArgs: rest, command, cli: false })
+    const processedArgs = processCliArgs({ rawArgs, parsedArgs, command, matchedPath, cli: false })
+    args = processedArgs.args
+    opts = { ...inheritedOpts, ...processedArgs.opts }
+
+    const usedGlobalOptions = Object.entries(parsedArgs)
+      .filter(([name, value]) => globalOptions[name] && !!value)
+      .map(([name, _]) => `--${name}`)
+
+    if (usedGlobalOptions.length > 0) {
+      bodyLog.warn({
+        symbol: "warning",
+        msg: chalk.yellow(`Step command includes global options that will be ignored: ${usedGlobalOptions.join(", ")}`),
+      })
+    }
+  } else {
+    // Check for custom command
+    const customCommands = await getCustomCommands(builtinCommands, garden.projectRoot)
+    const picked = pickCommand(customCommands, step.command!)
+    command = picked.command
+    rest = picked.rest
+    matchedPath = picked.matchedPath
+
+    const parsedArgs = parseCliArgs({ stringArgs: rest, command, cli: false })
+
+    if (command) {
+      const processedArgs = processCliArgs({ rawArgs, parsedArgs, command, matchedPath, cli: false })
+      args = processedArgs.args
+      opts = processedArgs.opts
+    }
+  }
 
   if (!command) {
-    throw new ConfigurationError(`Could not find Garden command '${step.command!}`, {
+    throw new ConfigurationError(`Could not find Garden command '${step.command!.join(" ")}`, {
       step,
     })
   }
 
-  if (!command?.workflows) {
-    throw new ConfigurationError(`Command '${command?.getFullName()}' is currently not supported in workflows`, {
-      step,
-      command: command?.getFullName(),
-    })
-  }
-
-  const parsedArgs = parseCliArgs({ stringArgs: rest, command, cli: false })
-  const { args, opts } = processCliArgs({ parsedArgs, command, cli: false })
-
-  const result = await command.action({
+  const params = {
+    cli,
     garden,
     footerLog,
     log: bodyLog,
     headerLog,
     args,
-    opts: merge(inheritedOpts, opts),
-    isWorkflowStepCommand: true, // <-----
-  })
-  return result
+    opts,
+  }
+
+  const persistent = command.isPersistent(params)
+
+  if (persistent) {
+    throw new ConfigurationError(
+      `Workflow steps cannot run Garden commands that are persistent (e.g. the dev command, commands with watch flags set etc.)`,
+      {
+        step,
+      }
+    )
+  }
+
+  return await command.action(params)
 }
 
 export async function runStepScript({ garden, bodyLog, step }: RunStepParams): Promise<CommandResult<any>> {
@@ -417,11 +475,7 @@ export function logErrors(
   stepDescription?: string
 ) {
   const description = formattedStepDescription(stepIndex, stepCount, stepDescription)
-  const errMsg = dedent`
-    An error occurred while running step ${chalk.white(description)}.
-
-    See the log output below for additional details.\n
-  `
+  const errMsg = `An error occurred while running step ${chalk.white(description)}.\n`
   log.error(chalk.red(errMsg))
   log.debug("")
   for (const error of errors) {
@@ -433,17 +487,19 @@ export function logErrors(
       )
       log.error(scriptErrMsg)
     } else {
-      // Error comes from a command step. We only log the detail here (and only for log.debug or higher), since
-      // the task graph's error logging takes care of the rest.
-      const taskDetailErrMsg = formatGardenError(error)
-      log.debug(chalk.red(taskDetailErrMsg))
+      // Error comes from a command step.
+      if (error.detail) {
+        const taskDetailErrMsg = formatGardenErrorWithDetail(error)
+        log.debug(chalk.red(taskDetailErrMsg))
+      }
+      log.error(chalk.red(error.message + "\n"))
     }
   }
 }
 
 async function registerAndSetUid(garden: Garden, log: LogEntry, config: WorkflowConfig) {
-  const { enterpriseApi } = garden
-  if (enterpriseApi) {
+  const { cloudApi } = garden
+  if (cloudApi) {
     const workflowRunUid = await registerWorkflowRun({
       garden,
       workflowConfig: config,
@@ -452,27 +508,6 @@ async function registerAndSetUid(garden: Garden, log: LogEntry, config: Workflow
       log,
     })
     garden.events.emit("_workflowRunRegistered", { workflowRunUid })
-  }
-}
-
-/**
- * If one or more steps of the workflow is a command with `streamEvents = true`, we prepare a `ConfigGraph` instance
- * and stream a stack graph event.
- *
- * This is only done once at the beginning of the workflow to avoid streaming the graph for every subcommand having
- * `streamEvents = true` (since we're also passing `isStepCommand = true` to the step command action in
- * `runStepCommand`).
- */
-async function maybeEmitStackGraphEvent(garden: Garden, log: LogEntry, config: WorkflowConfig) {
-  const shouldEmitStackGraphEvent = config.steps.find((s) => {
-    if (!s.command) {
-      return false
-    }
-    const { command } = pickCommand(getAllCommands(), s.command)
-    return command && command.streamEvents
-  })
-  if (shouldEmitStackGraphEvent) {
-    await garden.getConfigGraph({ log, emit: true })
   }
 }
 

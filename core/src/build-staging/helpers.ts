@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -61,7 +61,7 @@ export function cloneFile({ from, to, allowDelete, statsHelper }: CloneFileParam
           sourceStats = sourceStats.target
         } else {
           // Symlink couldn't be resolved, so we ignore it
-          done(null, { skipped: true })
+          return done(null, { skipped: true })
         }
       }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -256,7 +256,7 @@ describe("docs config module", () => {
           - name:
             copy:
               - source:
-                target: ''
+                target:
       `)
     })
 
@@ -318,7 +318,23 @@ describe("docs config module", () => {
         keyC: foo
       `)
     })
-
+    it("should optionally remove keys without preset values", () => {
+      const schema = joi.object().keys({
+        keyA: joi.string(),
+        keyB: joi.string().default("default-value"),
+        keyC: joi.number().example(4),
+        keyD: joi.number().description("foobar"),
+      })
+      const schemaDescriptions = normalizeJoiSchemaDescription(schema.describe() as JoiDescription)
+      const yaml = renderSchemaDescriptionYaml(schemaDescriptions, {
+        renderFullDescription: false,
+        presetValues: { keyA: "foo" },
+        onEmptyValue: "remove",
+      })
+      expect(yaml).to.equal(dedent`
+        keyA: foo
+      `)
+    })
     it("should optionally comment out keys without preset values", () => {
       const schema = joi.object().keys({
         keyA: joi.string(),
@@ -328,7 +344,7 @@ describe("docs config module", () => {
 
       const schemaDescriptions = normalizeJoiSchemaDescription(schema.describe() as JoiDescription)
       const yaml = renderSchemaDescriptionYaml(schemaDescriptions, {
-        commentOutEmpty: true,
+        onEmptyValue: "comment out",
         filterMarkdown: true,
         presetValues: { keyC: "foo" },
         renderBasicDescription: false,

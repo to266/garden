@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -18,8 +18,6 @@ interface TestValues {
   [key: string]: TestValue
 }
 
-let currentBranch: string
-
 describe("WorkflowConfigContext", () => {
   let garden: TestGarden
   let c: WorkflowConfigContext
@@ -27,7 +25,6 @@ describe("WorkflowConfigContext", () => {
   before(async () => {
     garden = await makeTestGardenA()
     garden["secrets"] = { someSecret: "someSecretValue" }
-    currentBranch = garden.vcsBranch
     c = new WorkflowConfigContext(garden, garden.variables)
   })
 
@@ -39,15 +36,15 @@ describe("WorkflowConfigContext", () => {
     delete process.env.TEST_VARIABLE
   })
 
-  it("should resolve the local platform", async () => {
-    expect(c.resolve({ key: ["local", "platform"], nodePath: [], opts: {} })).to.eql({
-      resolved: process.platform,
+  it("should resolve the local arch", async () => {
+    expect(c.resolve({ key: ["local", "arch"], nodePath: [], opts: {} })).to.eql({
+      resolved: process.arch,
     })
   })
 
-  it("should resolve the current git branch", () => {
-    expect(c.resolve({ key: ["git", "branch"], nodePath: [], opts: {} })).to.eql({
-      resolved: currentBranch,
+  it("should resolve the local platform", async () => {
+    expect(c.resolve({ key: ["local", "platform"], nodePath: [], opts: {} })).to.eql({
+      resolved: process.platform,
     })
   })
 

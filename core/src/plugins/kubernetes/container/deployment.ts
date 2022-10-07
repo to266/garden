@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,35 +7,35 @@
  */
 
 import chalk from "chalk"
-import { V1Container, V1Affinity, V1VolumeMount, V1PodSpec, V1Deployment, V1DaemonSet } from "@kubernetes/client-node"
+import { V1Affinity, V1Container, V1DaemonSet, V1Deployment, V1PodSpec, V1VolumeMount } from "@kubernetes/client-node"
 import { GardenService } from "../../../types/service"
-import { extend, find, keyBy, merge, set, omit } from "lodash"
-import { ContainerModule, ContainerService, ContainerVolumeSpec, ContainerServiceConfig } from "../../container/config"
+import { extend, find, keyBy, omit, set } from "lodash"
+import { ContainerModule, ContainerService, ContainerServiceConfig, ContainerVolumeSpec } from "../../container/config"
 import { createIngressResources } from "./ingress"
 import { createServiceResources } from "./service"
-import { waitForResources, compareDeployedResources } from "../status/status"
+import { compareDeployedResources, waitForResources } from "../status/status"
 import { apply, deleteObjectsBySelector, KUBECTL_DEFAULT_TIMEOUT } from "../kubectl"
 import { getAppNamespace, getAppNamespaceStatus } from "../namespace"
 import { PluginContext } from "../../../plugin-context"
 import { KubeApi } from "../api"
-import { KubernetesProvider, KubernetesPluginContext } from "../config"
-import { KubernetesWorkload, KubernetesResource } from "../types"
+import { KubernetesPluginContext, KubernetesProvider } from "../config"
+import { KubernetesResource, KubernetesWorkload } from "../types"
 import { ConfigurationError } from "../../../exceptions"
-import { getContainerServiceStatus, ContainerServiceStatus } from "./status"
-import { containerHelpers } from "../../container/helpers"
+import { ContainerServiceStatus, getContainerServiceStatus } from "./status"
 import { LogEntry } from "../../../logger/log-entry"
 import { DeployServiceParams } from "../../../types/plugin/service/deployService"
 import { DeleteServiceParams } from "../../../types/plugin/service/deleteService"
 import { prepareEnvVars, workloadTypes } from "../util"
-import { gardenAnnotationKey, deline } from "../../../util/string"
+import { deline, gardenAnnotationKey } from "../../../util/string"
 import { RuntimeContext } from "../../../runtime-context"
 import { resolve } from "path"
 import { killPortForwards } from "../port-forward"
-import { prepareImagePullSecrets } from "../secrets"
+import { prepareSecrets } from "../secrets"
 import { configureHotReload } from "../hot-reload/helpers"
 import { configureDevMode, startDevModeSync } from "../dev-mode"
-import { hotReloadableKinds, HotReloadableResource } from "../hot-reload/hot-reload"
-import { getResourceRequirements } from "./util"
+import { syncableKinds, SyncableResource } from "../hot-reload/hot-reload"
+import { getResourceRequirements, getSecurityContext } from "./util"
+import { configureLocalMode, startServiceInLocalMode } from "../local-mode"
 
 export const DEFAULT_CPU_REQUEST = "10m"
 export const DEFAULT_MEMORY_REQUEST = "90Mi" // This is the minimum in some clusters
@@ -47,13 +47,16 @@ export const PRODUCTION_MINIMUM_REPLICAS = 3
 export async function deployContainerService(
   params: DeployServiceParams<ContainerModule>
 ): Promise<ContainerServiceStatus> {
-  const { ctx, service, log, devMode } = params
+  const { ctx, service, log, devMode, localMode } = params
+  const deployWithDevMode = devMode && !!service.spec.devMode
   const { deploymentStrategy } = params.ctx.provider.config
+  const k8sCtx = <KubernetesPluginContext>ctx
+  const api = await KubeApi.factory(log, k8sCtx, k8sCtx.provider)
 
   if (deploymentStrategy === "blue-green") {
-    await deployContainerServiceBlueGreen(params)
+    await deployContainerServiceBlueGreen({ ...params, devMode: deployWithDevMode, api })
   } else {
-    await deployContainerServiceRolling(params)
+    await deployContainerServiceRolling({ ...params, devMode: deployWithDevMode, api })
   }
 
   const status = await getContainerServiceStatus(params)
@@ -63,7 +66,16 @@ export async function deployContainerService(
 
   if (devMode) {
     await startContainerDevSync({
-      ctx: <KubernetesPluginContext>ctx,
+      ctx: k8sCtx,
+      log,
+      status,
+      service,
+    })
+  }
+
+  if (localMode) {
+    await startLocalMode({
+      ctx: k8sCtx,
       log,
       status,
       service,
@@ -88,10 +100,13 @@ export async function startContainerDevSync({
     return
   }
 
+  log.info({
+    section: service.name,
+    msg: chalk.grey(`Deploying in dev mode`),
+  })
+
   const namespace = await getAppNamespace(ctx, log, ctx.provider)
-  const target = status.detail.remoteResources.find((r) =>
-    hotReloadableKinds.includes(r.kind)
-  )! as HotReloadableResource
+  const target = status.detail.remoteResources.find((r) => syncableKinds.includes(r.kind))! as SyncableResource
 
   await startDevModeSync({
     ctx,
@@ -104,8 +119,36 @@ export async function startContainerDevSync({
   })
 }
 
-export async function deployContainerServiceRolling(params: DeployServiceParams<ContainerModule>) {
-  const { ctx, service, runtimeContext, log, devMode, hotReload } = params
+export async function startLocalMode({
+  ctx,
+  log,
+  status,
+  service,
+}: {
+  ctx: KubernetesPluginContext
+  status: ContainerServiceStatus
+  log: LogEntry
+  service: ContainerService
+}) {
+  if (!service.spec.localMode) {
+    return
+  }
+
+  const namespace = await getAppNamespace(ctx, log, ctx.provider)
+  const targetResource = status.detail.remoteResources.find((r) => syncableKinds.includes(r.kind))! as SyncableResource
+
+  await startServiceInLocalMode({
+    ctx,
+    spec: service.spec.localMode,
+    targetResource,
+    gardenService: service,
+    namespace,
+    log,
+  })
+}
+
+export async function deployContainerServiceRolling(params: DeployServiceParams<ContainerModule> & { api: KubeApi }) {
+  const { ctx, api, service, runtimeContext, log, devMode, hotReload, localMode } = params
   const k8sCtx = <KubernetesPluginContext>ctx
 
   const namespaceStatus = await getAppNamespaceStatus(k8sCtx, log, k8sCtx.provider)
@@ -113,18 +156,20 @@ export async function deployContainerServiceRolling(params: DeployServiceParams<
 
   const { manifests } = await createContainerManifests({
     ctx: k8sCtx,
+    api,
     log,
     service,
     runtimeContext,
     enableDevMode: devMode,
     enableHotReload: hotReload,
+    enableLocalMode: localMode,
     blueGreen: false,
   })
 
   const provider = k8sCtx.provider
-  const pruneSelector = gardenAnnotationKey("service") + "=" + service.name
+  const pruneLabels = { [gardenAnnotationKey("service")]: service.name }
 
-  await apply({ log, ctx, provider, manifests, namespace, pruneSelector })
+  await apply({ log, ctx, api, provider, manifests, namespace, pruneLabels })
 
   await waitForResources({
     namespace,
@@ -133,12 +178,12 @@ export async function deployContainerServiceRolling(params: DeployServiceParams<
     serviceName: service.name,
     resources: manifests,
     log,
-    timeoutSec: KUBECTL_DEFAULT_TIMEOUT,
+    timeoutSec: service.spec.timeout || KUBECTL_DEFAULT_TIMEOUT,
   })
 }
 
-export async function deployContainerServiceBlueGreen(params: DeployServiceParams<ContainerModule>) {
-  const { ctx, service, runtimeContext, log, devMode, hotReload } = params
+export async function deployContainerServiceBlueGreen(params: DeployServiceParams<ContainerModule> & { api: KubeApi }) {
+  const { ctx, api, service, runtimeContext, log, devMode, hotReload, localMode } = params
   const k8sCtx = <KubernetesPluginContext>ctx
   const namespaceStatus = await getAppNamespaceStatus(k8sCtx, log, k8sCtx.provider)
   const namespace = namespaceStatus.namespaceName
@@ -146,16 +191,17 @@ export async function deployContainerServiceBlueGreen(params: DeployServiceParam
   // Create all the resource manifests for the Garden service which will be deployed
   const { manifests } = await createContainerManifests({
     ctx: k8sCtx,
+    api,
     log,
     service,
     runtimeContext,
     enableDevMode: devMode,
     enableHotReload: hotReload,
+    enableLocalMode: localMode,
     blueGreen: true,
   })
 
   const provider = k8sCtx.provider
-  const api = await KubeApi.factory(log, ctx, provider)
 
   // Retrieve the k8s service referring to the Garden service which is already deployed
   const currentService = (await api.core.listNamespacedService(namespace)).items.filter(
@@ -168,7 +214,7 @@ export async function deployContainerServiceBlueGreen(params: DeployServiceParam
   if (!isServiceAlreadyDeployed) {
     // No service found, no need to execute a blue-green deployment
     // Just apply all the resources for the Garden service
-    await apply({ log, ctx, provider, manifests, namespace })
+    await apply({ log, ctx, api, provider, manifests, namespace })
     await waitForResources({
       namespace,
       ctx,
@@ -188,7 +234,7 @@ export async function deployContainerServiceBlueGreen(params: DeployServiceParam
     const filteredManifests = manifests.filter((manifest) => manifest.kind !== "Service")
 
     // Apply new Deployment manifest (deploy the Green version)
-    await apply({ log, ctx, provider, manifests: filteredManifests, namespace })
+    await apply({ log, ctx, api, provider, manifests: filteredManifests, namespace })
     await waitForResources({
       namespace,
       ctx,
@@ -217,14 +263,14 @@ export async function deployContainerServiceBlueGreen(params: DeployServiceParam
 
     // First patch the generated service to point to the new version of the deployment
     const serviceManifest = find(manifests, (manifest) => manifest.kind === "Service")
-    const patchedServiceManifest = merge(serviceManifest, servicePatchBody)
+    const patchedServiceManifest = { ...serviceManifest, ...servicePatchBody }
     // Compare with the deployed Service
     const result = await compareDeployedResources(k8sCtx, api, namespace, [patchedServiceManifest], log)
 
     // If the result is outdated it means something in the Service definition itself changed
     // and we need to apply the whole Service manifest. Otherwise we just patch it.
     if (result.state === "outdated") {
-      await apply({ log, ctx, provider, manifests: [patchedServiceManifest], namespace })
+      await apply({ log, ctx, api, provider, manifests: [patchedServiceManifest], namespace })
     } else {
       await api.core.patchNamespacedService(service.name, namespace, servicePatchBody)
     }
@@ -256,26 +302,29 @@ export async function deployContainerServiceBlueGreen(params: DeployServiceParam
 
 export async function createContainerManifests({
   ctx,
+  api,
   log,
   service,
   runtimeContext,
   enableDevMode,
   enableHotReload,
+  enableLocalMode,
   blueGreen,
 }: {
   ctx: PluginContext
+  api: KubeApi
   log: LogEntry
   service: ContainerService
   runtimeContext: RuntimeContext
   enableDevMode: boolean
   enableHotReload: boolean
+  enableLocalMode: boolean
   blueGreen: boolean
 }) {
   const k8sCtx = <KubernetesPluginContext>ctx
   const provider = k8sCtx.provider
   const { production } = ctx
   const namespace = await getAppNamespace(k8sCtx, log, provider)
-  const api = await KubeApi.factory(log, ctx, provider)
   const ingresses = await createIngressResources(api, provider, namespace, service, log)
   const workload = await createWorkloadManifest({
     api,
@@ -285,13 +334,25 @@ export async function createContainerManifests({
     namespace,
     enableDevMode,
     enableHotReload,
+    enableLocalMode,
     log,
     production,
     blueGreen,
   })
-  const kubeservices = await createServiceResources(service, namespace, blueGreen)
+  const kubeServices = await createServiceResources(service, namespace, blueGreen)
 
-  const manifests = [workload, ...kubeservices, ...ingresses]
+  const localModeSpec = service.spec.localMode
+  if (enableLocalMode && localModeSpec) {
+    await configureLocalMode({
+      ctx,
+      spec: localModeSpec,
+      targetResource: workload,
+      gardenService: service,
+      log,
+    })
+  }
+
+  const manifests = [workload, ...kubeServices, ...ingresses]
 
   for (const obj of manifests) {
     set(obj, ["metadata", "labels", gardenAnnotationKey("module")], service.module.name)
@@ -311,6 +372,7 @@ interface CreateDeploymentParams {
   namespace: string
   enableDevMode: boolean
   enableHotReload: boolean
+  enableLocalMode: boolean
   log: LogEntry
   production: boolean
   blueGreen: boolean
@@ -324,6 +386,7 @@ export async function createWorkloadManifest({
   namespace,
   enableDevMode,
   enableHotReload,
+  enableLocalMode,
   log,
   production,
   blueGreen,
@@ -347,6 +410,14 @@ export async function createWorkloadManifest({
   if (enableHotReload && configuredReplicas > 1) {
     log.warn({
       msg: chalk.yellow(`Ignoring replicas config on container service ${service.name} while in hot-reload mode`),
+      symbol: "warning",
+    })
+    configuredReplicas = 1
+  }
+
+  if (enableLocalMode && configuredReplicas > 1) {
+    log.verbose({
+      msg: chalk.yellow(`Ignoring replicas config on container service ${service.name} while in local mode`),
       symbol: "warning",
     })
     configuredReplicas = 1
@@ -390,8 +461,7 @@ export async function createWorkloadManifest({
     valueFrom: { fieldRef: { fieldPath: "metadata.uid" } },
   })
 
-  const registryConfig = provider.config.deploymentRegistry
-  const imageId = containerHelpers.getDeploymentImageId(service.module, service.module.version, registryConfig)
+  const imageId = service.module.outputs["deployment-image-id"]
 
   const { cpu, memory, limits } = spec
 
@@ -403,7 +473,8 @@ export async function createWorkloadManifest({
     resources: getResourceRequirements({ cpu, memory }, limits),
     imagePullPolicy: "IfNotPresent",
     securityContext: {
-      allowPrivilegeEscalation: false,
+      allowPrivilegeEscalation: spec.privileged || false,
+      ...getSecurityContext(spec.privileged, spec.addCapabilities, spec.dropCapabilities),
     },
   }
 
@@ -417,8 +488,21 @@ export async function createWorkloadManifest({
     container.args = service.spec.args
   }
 
+  if (spec.tty) {
+    container.tty = true
+    container.stdin = true
+  }
+
   if (spec.healthCheck) {
-    configureHealthCheck(container, spec, enableHotReload || enableDevMode)
+    let mode: HealthCheckMode
+    if (enableHotReload || enableDevMode) {
+      mode = "dev"
+    } else if (enableLocalMode) {
+      mode = "local"
+    } else {
+      mode = "normal"
+    }
+    configureHealthCheck(container, spec, mode)
   }
 
   if (spec.volumes && spec.volumes.length) {
@@ -469,9 +553,11 @@ export async function createWorkloadManifest({
   }
 
   if (provider.config.imagePullSecrets.length > 0) {
-    // add any configured imagePullSecrets
-    workload.spec.template.spec!.imagePullSecrets = await prepareImagePullSecrets({ api, provider, namespace, log })
+    // add any configured imagePullSecrets.
+    const imagePullSecrets = await prepareSecrets({ api, namespace, secrets: provider.config.imagePullSecrets, log })
+    workload.spec.template.spec!.imagePullSecrets = imagePullSecrets
   }
+  await prepareSecrets({ api, namespace, secrets: provider.config.copySecrets, log })
 
   // this is important for status checks to work correctly, because how K8s normalizes resources
   if (!container.ports!.length) {
@@ -517,8 +603,12 @@ export async function createWorkloadManifest({
   }
 
   const devModeSpec = service.spec.devMode
+  const localModeSpec = service.spec.localMode
 
-  if (enableDevMode && devModeSpec) {
+  // Local mode always takes precedence over dev mode
+  if (enableLocalMode && localModeSpec) {
+    // no op here, local mode will be configured later after all manifests are ready
+  } else if (enableDevMode && devModeSpec) {
     log.debug({ section: service.name, msg: chalk.gray(`-> Configuring in dev mode`) })
 
     configureDevMode({
@@ -625,7 +715,18 @@ function workloadConfig({
   }
 }
 
-function configureHealthCheck(container: V1Container, spec: ContainerServiceConfig["spec"], dev: boolean): void {
+type HealthCheckMode = "dev" | "local" | "normal"
+
+function configureHealthCheck(
+  container: V1Container,
+  spec: ContainerServiceConfig["spec"],
+  mode: HealthCheckMode
+): void {
+  if (mode === "local") {
+    // no need to configure liveness and readiness probes for a service running in local mode
+    return
+  }
+
   const readinessPeriodSeconds = 1
   const readinessFailureThreshold = 90
 
@@ -644,10 +745,10 @@ function configureHealthCheck(container: V1Container, spec: ContainerServiceConf
   // hot reload event.
   container.livenessProbe = {
     initialDelaySeconds: readinessPeriodSeconds * readinessFailureThreshold,
-    periodSeconds: dev ? 10 : 5,
+    periodSeconds: mode === "dev" ? 10 : 5,
     timeoutSeconds: spec.healthCheck?.livenessTimeoutSeconds || 3,
     successThreshold: 1,
-    failureThreshold: dev ? 30 : 3,
+    failureThreshold: mode === "dev" ? 30 : 3,
   }
 
   const portsByName = keyBy(spec.ports, "name")

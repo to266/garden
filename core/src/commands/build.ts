@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -24,6 +24,9 @@ import { flatten } from "lodash"
 import { BuildTask } from "../tasks/build"
 import { StringsParameter, BooleanParameter } from "../cli/params"
 import { Garden } from "../garden"
+import { GardenModule } from "../types/module"
+import { uniqByName } from "../util/util"
+import { deline } from "../util/string"
 
 const buildArgs = {
   modules: new StringsParameter({
@@ -32,11 +35,18 @@ const buildArgs = {
 }
 
 const buildOpts = {
-  force: new BooleanParameter({ help: "Force rebuild of module(s).", alias: "f" }),
-  watch: new BooleanParameter({
+  "force": new BooleanParameter({ help: "Force rebuild of module(s).", alias: "f" }),
+  "watch": new BooleanParameter({
     help: "Watch for changes in module(s) and auto-build.",
     alias: "w",
     cliOnly: true,
+  }),
+  "with-dependants": new BooleanParameter({
+    help: deline`
+      Also rebuild modules that have build dependencies on one of the modules specified as CLI arguments (recursively).
+      Note: This option has no effect unless a list of module names is specified as CLI arguments (since then, every
+      module in the project will be rebuilt).
+  `,
   }),
 }
 
@@ -48,7 +58,6 @@ export class BuildCommand extends Command<Args, Opts> {
   help = "Build your modules."
 
   protected = true
-  workflows = true
   streamEvents = true
 
   description = dedent`
@@ -70,14 +79,14 @@ export class BuildCommand extends Command<Args, Opts> {
 
   outputsSchema = () => processCommandResultSchema()
 
-  async prepare({ footerLog, opts }: PrepareParams<Args, Opts>) {
-    const persistent = !!opts.watch
+  isPersistent({ opts }: PrepareParams<Args, Opts>) {
+    return !!opts.watch
+  }
 
-    if (persistent) {
-      this.server = await startServer({ log: footerLog })
+  async prepare(params: PrepareParams<Args, Opts>) {
+    if (this.isPersistent(params)) {
+      this.server = await startServer({ log: params.footerLog })
     }
-
-    return { persistent }
   }
 
   terminate() {
@@ -90,7 +99,6 @@ export class BuildCommand extends Command<Args, Opts> {
 
   async action({
     garden,
-    isWorkflowStepCommand,
     log,
     footerLog,
     args,
@@ -104,8 +112,15 @@ export class BuildCommand extends Command<Args, Opts> {
 
     await garden.clearBuilds()
 
-    const graph = await garden.getConfigGraph({ log, emit: !isWorkflowStepCommand })
-    const modules = graph.getModules({ names: args.modules })
+    const graph = await garden.getConfigGraph({ log, emit: true })
+    let modules: GardenModule[] = graph.getModules({ names: args.modules })
+    if (opts["with-dependants"]) {
+      // Then we include build dependants (recursively) in the list of modules to build.
+      modules = uniqByName([
+        ...modules,
+        ...flatten(modules.map((m) => graph.getDependants({ nodeType: "build", name: m.name, recursive: true }).build)),
+      ])
+    }
     const moduleNames = modules.map((m) => m.name)
 
     const initialTasks = flatten(

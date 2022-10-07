@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -64,7 +64,6 @@ export class PublishCommand extends Command<Args, Opts> {
   name = "publish"
   help = "Build and publish module(s) (e.g. container images) to a remote registry."
 
-  workflows = true
   streamEvents = true
 
   description = dedent`
@@ -103,13 +102,12 @@ export class PublishCommand extends Command<Args, Opts> {
 
   async action({
     garden,
-    isWorkflowStepCommand,
     log,
     footerLog,
     args,
     opts,
   }: CommandParams<Args, Opts>): Promise<CommandResult<PublishCommandResult>> {
-    const graph = await garden.getConfigGraph({ log, emit: !isWorkflowStepCommand })
+    const graph = await garden.getConfigGraph({ log, emit: true })
     const modules = graph.getModules({ names: args.modules })
 
     const results = await publishModules({

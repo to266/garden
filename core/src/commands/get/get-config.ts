@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -35,8 +35,6 @@ export class GetConfigCommand extends Command<{}, Opts> {
   name = "config"
   help = "Outputs the full configuration for this project and environment."
 
-  workflows = true
-
   outputsSchema = () =>
     joi.object().keys({
       allEnvironmentNames: joiArray(environmentNameSchema()).required(),
@@ -50,8 +48,8 @@ export class GetConfigCommand extends Command<{}, Opts> {
       workflowConfigs: joi.array().items(workflowConfigSchema()).description("All workflow configs in the project."),
       projectName: joi.string().description("The name of the project."),
       projectRoot: joi.string().description("The local path to the project root."),
-      projectId: joi.string().optional().description("The project ID (Garden Enterprise only)."),
-      domain: joi.string().optional().description("The Garden Enterprise domain (Garden Enterprise only)."),
+      projectId: joi.string().optional().description("The project ID (Garden Cloud only)."),
+      domain: joi.string().optional().description("The Garden Cloud domain (Garden Cloud only)."),
     })
 
   options = getConfigOptions

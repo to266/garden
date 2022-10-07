@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -24,13 +24,13 @@ import { DASHBOARD_STATIC_DIR, gardenEnv } from "../constants"
 import { LogEntry } from "../logger/log-entry"
 import { Command, CommandResult } from "../commands/base"
 import { toGardenError, GardenError } from "../exceptions"
-import { EventName, Events, EventBus, GardenEventListener } from "../events"
+import { EventName, Events, EventBus, GardenEventListener, cloudRequestEventNames } from "../events"
 import { uuidv4, ValueOf } from "../util/util"
 import { AnalyticsHandler } from "../analytics/analytics"
 import { joi } from "../config/common"
 import { randomString } from "../util/string"
-import { authTokenHeader } from "../enterprise/api"
-import { ApiEventBatch } from "../enterprise/buffered-event-stream"
+import { authTokenHeader } from "../cloud/api"
+import { ApiEventBatch } from "../cloud/buffered-event-stream"
 import { LogLevel } from "../logger/logger"
 
 // Note: This is different from the `garden dashboard` default port.
@@ -79,15 +79,15 @@ export class GardenServer {
     this.debugLog = this.log.placeholder({ level: LogLevel.debug, childEntriesInheritLevel: true })
     this.garden = undefined
     this.port = port
-    this.authKey = randomString(64)
+    this.authKey = randomString(24)
     this.incomingEvents = new EventBus()
     this.activePersistentRequests = {}
 
     this.serversUpdatedListener = ({ servers }) => {
       // Update status log line with new `garden dashboard` server, if any
-      for (const { host, command } of servers) {
+      for (const { host, command, serverAuthKey } of servers) {
         if (command === "dashboard") {
-          this.showUrl(host)
+          this.showUrl(`${host}?key=${serverAuthKey}`)
           return
         }
       }
@@ -104,13 +104,15 @@ export class GardenServer {
 
     this.app = await this.createApp()
 
+    const hostname = gardenEnv.GARDEN_SERVER_HOSTNAME || "localhost"
+
     if (this.port) {
-      this.server = this.app.listen(this.port)
+      this.server = this.app.listen(this.port, hostname)
     } else {
       do {
         try {
           this.port = await getPort({ port: defaultWatchServerPort })
-          this.server = this.app.listen(this.port)
+          this.server = this.app.listen(this.port, hostname)
         } catch {}
       } while (!this.server)
     }
@@ -119,14 +121,18 @@ export class GardenServer {
     this.statusLog = this.log.placeholder()
   }
 
-  getUrl() {
+  getBaseUrl() {
     return `http://localhost:${this.port}`
+  }
+
+  getUrl() {
+    return `${this.getBaseUrl()}?key=${this.authKey}`
   }
 
   showUrl(url?: string) {
     this.statusLog.setState({
       emoji: "sunflower",
-      msg: chalk.cyan("Garden dashboard running at ") + (url || this.getUrl()),
+      msg: chalk.cyan("Garden dashboard running at ") + chalk.blueBright(url || this.getUrl()),
     })
   }
 
@@ -156,6 +162,16 @@ export class GardenServer {
     const app = websockify(new Koa())
     const http = new Router()
 
+    http.use((ctx, next) => {
+      const authToken = ctx.header[authTokenHeader] || ctx.query.key
+
+      if (authToken !== this.authKey) {
+        ctx.throw(401, `Unauthorized request`)
+        return
+      }
+      return next()
+    })
+
     /**
      * HTTP API endpoint (POST /api)
      *
@@ -164,7 +180,6 @@ export class GardenServer {
      * means we can keep a consistent format across mechanisms.
      */
     http.post("/api", async (ctx) => {
-      // TODO: require auth key here from 0.13.0 onwards
       if (!this.garden) {
         return this.notReady(ctx)
       }
@@ -181,17 +196,21 @@ export class GardenServer {
 
       const { command, log, args, opts } = parseRequest(ctx, this.debugLog, commands, ctx.request.body)
 
-      const { persistent } = await command.prepare({
+      const prepareParams = {
         log,
         headerLog: log,
         footerLog: log,
         args,
         opts,
-      })
+      }
+
+      const persistent = command.isPersistent(prepareParams)
 
       if (persistent) {
         ctx.throw(400, "Attempted to run persistent command (e.g. a watch/follow command). Aborting.")
       }
+
+      await command.prepare(prepareParams)
 
       const result = await command.action({
         garden: this.garden,
@@ -232,18 +251,10 @@ export class GardenServer {
      * Events endpoint, for ingesting events from other Garden processes, and piping to any open websocket connections.
      * Requires a valid auth token header, matching `this.authKey`.
      *
-     * The API matches that of the Garden Enterprise /events endpoint.
+     * The API matches that of the Garden Cloud /events endpoint.
      */
     http.post("/events", async (ctx) => {
-      const authHeader = ctx.header[authTokenHeader]
-
-      if (authHeader !== this.authKey) {
-        ctx.status = 401
-        return
-      }
-
       // TODO: validate the input
-
       const batch = ctx.request.body as ApiEventBatch
       this.debugLog.debug(`Received ${batch.events.length} events from session ${batch.sessionId}`)
 
@@ -254,6 +265,7 @@ export class GardenServer {
     })
 
     app.use(bodyParser())
+
     app.use(http.routes())
     app.use(http.allowedMethods())
 
@@ -273,7 +285,7 @@ export class GardenServer {
     return app
   }
 
-  private notReady(ctx: Router.IRouterContext) {
+  private notReady(ctx: Router.IRouterContext | Koa.ParameterizedContext) {
     ctx.status = 503
     ctx.response.body = notReadyMessage
   }
@@ -287,16 +299,16 @@ export class GardenServer {
     const wsRouter = new Router()
 
     wsRouter.get("/ws", async (ctx) => {
+      // The typing for koa-websocket isn't working currently
+      const websocket: Koa.Context["ws"] = ctx["websocket"]
+
       if (!this.garden) {
-        return this.notReady(ctx)
+        this.log.debug("Server not ready.")
+        websocket.terminate()
+        return
       }
 
       const connId = uuidv4()
-
-      // TODO: require auth key on connections here, from 0.13.0 onwards
-
-      // The typing for koa-websocket isn't working currently
-      const websocket: Koa.Context["ws"] = ctx["websocket"]
 
       // Helper to make JSON messages, make them type-safe, and to log errors.
       const send = <T extends ServerWebsocketMessageType>(type: T, payload: ServerWebsocketMessages[T]) => {
@@ -312,6 +324,13 @@ export class GardenServer {
       const error = (message: string, requestId?: string) => {
         this.log.debug(message)
         return send("error", { message, requestId })
+      }
+
+      // TODO: Only allow auth key authentication
+      if (ctx.query.sessionId !== `${this.garden.sessionId}` && ctx.query.key !== `${this.authKey}`) {
+        error(`401 Unauthorized`)
+        websocket.terminate()
+        return
       }
 
       // Set up heartbeat to detect dead connections
@@ -399,17 +418,19 @@ export class GardenServer {
               omit(request, ["id", "type"])
             )
 
-            command
-              .prepare({
-                log,
-                headerLog: log,
-                footerLog: log,
-                args,
-                opts,
-              })
-              .then((prepareResult) => {
-                const { persistent } = prepareResult
+            const prepareParams = {
+              log,
+              headerLog: log,
+              footerLog: log,
+              args,
+              opts,
+            }
 
+            const persistent = command.isPersistent(prepareParams)
+
+            command
+              .prepare(prepareParams)
+              .then(() => {
                 if (persistent) {
                   send("commandStart", {
                     requestId,
@@ -459,8 +480,10 @@ export class GardenServer {
           })
         } else if (request.type === "abortCommand") {
           const req = this.activePersistentRequests[requestId]
-          req.command.terminate()
+          req && req.command.terminate()
           delete this.activePersistentRequests[requestId]
+        } else if (cloudRequestEventNames.find((e) => e === request.type)) {
+          this.garden?.events.emit(request.type, request)
         } else {
           return send("error", {
             requestId,

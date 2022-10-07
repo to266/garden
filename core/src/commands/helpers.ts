@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -11,12 +11,14 @@ import indentString from "indent-string"
 import { sortBy } from "lodash"
 
 import { ConfigGraph } from "../config-graph"
+import { WorkflowConfig } from "../config/workflow"
 import { GardenModule } from "../types/module"
 import { GardenService } from "../types/service"
 import { GardenTask } from "../types/task"
 import { GardenTest } from "../types/test"
+import { uniqByName } from "../util/util"
 
-export async function getDevModeServiceNames(namesFromOpt: string[] | undefined, configGraph: ConfigGraph) {
+export function getMatchingServiceNames(namesFromOpt: string[] | undefined, configGraph: ConfigGraph) {
   const names = namesFromOpt || []
   if (names.includes("*") || (!!namesFromOpt && namesFromOpt.length === 0)) {
     return configGraph.getServices().map((s) => s.name)
@@ -25,7 +27,7 @@ export async function getDevModeServiceNames(namesFromOpt: string[] | undefined,
   }
 }
 
-export async function getHotReloadServiceNames(namesFromOpt: string[] | undefined, configGraph: ConfigGraph) {
+export function getHotReloadServiceNames(namesFromOpt: string[] | undefined, configGraph: ConfigGraph) {
   const names = namesFromOpt || []
   if (names.includes("*")) {
     return configGraph
@@ -37,14 +39,15 @@ export async function getHotReloadServiceNames(namesFromOpt: string[] | undefine
   }
 }
 
+export function getModulesByServiceNames(serviceNames: string[], graph: ConfigGraph): GardenModule[] {
+  return uniqByName(graph.getServices({ names: serviceNames }).map((s) => s.module))
+}
+
 /**
  * Returns an error message string if one or more serviceNames refers to a service that's not configured for
  * hot reloading, or if one or more of serviceNames referes to a non-existent service. Returns null otherwise.
  */
-export async function validateHotReloadServiceNames(
-  serviceNames: string[],
-  configGraph: ConfigGraph
-): Promise<string | null> {
+export function validateHotReloadServiceNames(serviceNames: string[], configGraph: ConfigGraph): string | null {
   const services = configGraph.getServices({ names: serviceNames, includeDisabled: true })
 
   const notHotreloadable = services.filter((s) => !supportsHotReloading(s)).map((s) => s.name)
@@ -97,6 +100,18 @@ export function makeGetTestOrTaskLog(
     logStr += `${type} in module ${chalk.green(m.name)}` + "\n" + logStrForTasks + "\n"
   }
   return logStr
+}
+
+export function prettyPrintWorkflow(workflow: WorkflowConfig): string {
+  let out = `${chalk.cyan.bold(workflow.name)}`
+
+  if (workflow.description) {
+    out += "\n" + indentString(printField("description", workflow.description), 2)
+  } else {
+    out += "\n"
+  }
+
+  return out
 }
 
 function prettyPrintTestOrTask(testOrTask: GardenTask | GardenTest): string {

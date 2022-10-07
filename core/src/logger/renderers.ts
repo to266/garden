@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -16,7 +16,7 @@ import hasAnsi = require("has-ansi")
 import { LogEntry, LogEntryMessage } from "./log-entry"
 import { JsonLogEntry } from "./writers/json-terminal-writer"
 import { highlightYaml, PickFromUnion, safeDumpYaml } from "../util/util"
-import { printEmoji, formatGardenError } from "./util"
+import { printEmoji, formatGardenErrorWithDetail, getAllSections } from "./util"
 import { LoggerType, Logger } from "./logger"
 
 type RenderFn = (entry: LogEntry) => string
@@ -82,7 +82,7 @@ export function renderEmoji(entry: LogEntry): string {
 export function renderError(entry: LogEntry) {
   const { errorData: error } = entry
   if (error) {
-    return formatGardenError(error)
+    return formatGardenErrorWithDetail(error)
   }
 
   const msg = chainMessages(entry.getMessages() || [])
@@ -93,7 +93,7 @@ export function renderSymbolBasic(entry: LogEntry): string {
   let { symbol, status } = entry.getLatestMessage()
 
   if (symbol === "empty") {
-    return "  "
+    return "  "
   }
   if (status === "active" && !symbol) {
     symbol = "info"
@@ -106,7 +106,7 @@ export function renderSymbol(entry: LogEntry): string {
   const { symbol } = entry.getLatestMessage()
 
   if (symbol === "empty") {
-    return "  "
+    return "  "
   }
   return symbol ? `${logSymbols[symbol]} ` : ""
 }
@@ -216,14 +216,21 @@ export function basicRender(entry: LogEntry, logger: Logger): string | null {
 
 // TODO: Include individual message states with timestamp
 export function formatForJson(entry: LogEntry): JsonLogEntry {
-  const { section, data } = entry.getLatestMessage()
+  const msg = entry.getLatestMessage()
   const metadata = entry.getMetadata()
-  const msg = chainMessages(entry.getMessages() || [])
-  return {
-    msg: cleanForJSON(msg),
-    data,
+  const messages = chainMessages(entry.getMessages() || [])
+  const errorDetail = entry.errorData && entry ? formatGardenErrorWithDetail(entry.errorData) : undefined
+  const jsonLogEntry: JsonLogEntry = {
+    msg: cleanForJSON(messages),
+    data: msg.data,
     metadata,
-    section: cleanForJSON(section),
+    section: cleanForJSON(msg.section),
     timestamp: getTimestamp(entry),
+    level: entry.getStringLevel(),
+    allSections: getAllSections(entry, msg).map(cleanForJSON),
   }
+  if (errorDetail) {
+    jsonLogEntry.errorDetail = errorDetail
+  }
+  return jsonLogEntry
 }

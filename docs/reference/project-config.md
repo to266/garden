@@ -41,8 +41,8 @@ environments:
 
     # Flag the environment as a production environment.
     #
-    # Setting this flag to `true` will activate the protection on the `deploy`, `test`, `task`, `build`,
-    # and `dev` commands. A protected command will ask for a user confirmation every time is run against
+    # Setting this flag to `true` will activate the protection on the `build`, `delete`, `deploy`, `dev`, and
+    # `test` commands. A protected command will ask for a user confirmation every time is run against
     # an environment marked as production.
     # Run the command with the "--yes" flag to skip the check (e.g. when running Garden in CI).
     #
@@ -149,8 +149,7 @@ modules:
 #
 # You may use any template strings to specify the values, including references to provider outputs, module
 # outputs and runtime outputs. For a full reference, see the [Output configuration
-# context](https://docs.garden.io/reference/template-strings#output-configuration-context) section in the Template
-# String Reference.
+# context](./template-strings/project-outputs.md) section in the Template String Reference.
 #
 # Note that if any runtime outputs are referenced, the referenced services and tasks will be deployed and run if
 # necessary when resolving the outputs.
@@ -271,8 +270,8 @@ environments:
 
 Flag the environment as a production environment.
 
-Setting this flag to `true` will activate the protection on the `deploy`, `test`, `task`, `build`,
-and `dev` commands. A protected command will ask for a user confirmation every time is run against
+Setting this flag to `true` will activate the protection on the `build`, `delete`, `deploy`, `dev`, and
+`test` commands. A protected command will ask for a user confirmation every time is run against
 an environment marked as production.
 Run the command with the "--yes" flag to skip the check (e.g. when running Garden in CI).
 
@@ -560,7 +559,7 @@ modules:
 A list of output values that the project should export. These are exported by the `garden get outputs` command, as well as when referencing a project as a sub-project within another project.
 
 You may use any template strings to specify the values, including references to provider outputs, module
-outputs and runtime outputs. For a full reference, see the [Output configuration context](https://docs.garden.io/reference/template-strings#output-configuration-context) section in the Template String Reference.
+outputs and runtime outputs. For a full reference, see the [Output configuration context](./template-strings/project-outputs.md) section in the Template String Reference.
 
 Note that if any runtime outputs are referenced, the referenced services and tasks will be deployed and run if necessary when resolving the outputs.
 
@@ -592,9 +591,9 @@ outputs:
 The value for the output. Must be a primitive (string, number, boolean or null). May also be any valid template
 string.
 
-| Type                        | Required |
-| --------------------------- | -------- |
-| `string | number | boolean` | Yes      |
+| Type                          | Required |
+| ----------------------------- | -------- |
+| `string \| number \| boolean` | Yes      |
 
 Example:
 
@@ -634,9 +633,9 @@ sources:
 
 A remote repository URL. Currently only supports git servers. Must contain a hash suffix pointing to a specific branch or tag, with the format: <git remote url>#<branch|tag>
 
-| Type              | Required |
-| ----------------- | -------- |
-| `gitUrl | string` | Yes      |
+| Type               | Required |
+| ------------------ | -------- |
+| `gitUrl \| string` | Yes      |
 
 Example:
 

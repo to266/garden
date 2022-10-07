@@ -1,13 +1,12 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { BufferedEventStream, ConnectBufferedEventStreamParams } from "../enterprise/buffered-event-stream"
-import { GardenProcess } from "../db/entities/garden-process"
+import { BufferedEventStream, ConnectBufferedEventStreamParams } from "../cloud/buffered-event-stream"
 import { Profile } from "../util/profiling"
 import { isEqual } from "lodash"
 
@@ -36,6 +35,9 @@ export class DashboardEventStream extends BufferedEventStream {
       return []
     }
 
+    // Note: lazy-loading for performance
+    const { GardenProcess } = await import("../db/entities/garden-process")
+
     const running = await GardenProcess.getActiveProcesses()
     const servers = running.filter(
       (p) =>
@@ -60,7 +62,11 @@ export class DashboardEventStream extends BufferedEventStream {
       this.log.debug(`Updated list of running dashboard servers: ${servers.map((p) => p.serverHost).join(", ")}`)
 
       this.garden.events.emit("serversUpdated", {
-        servers: servers.map((p) => ({ command: p.command!, host: p.serverHost! })),
+        servers: servers.map((p) => ({
+          command: p.command!,
+          host: p.serverHost!,
+          serverAuthKey: p.serverAuthKey || "",
+        })),
       })
     }
 

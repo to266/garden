@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -110,8 +110,8 @@ function makeMarkdownDescription(description: BaseKeyDescription, { showRequired
 }
 
 interface RenderYamlOpts {
-  // Comment out any keys that don't have a value set in `values`
-  commentOutEmpty?: boolean
+  // Comment out or remove any keys that don't have a value set in `values`
+  onEmptyValue?: "comment out" | "remove" | "keep"
   // Convert markdown links encountered in descriptions to just normal links
   filterMarkdown?: boolean
   level?: number
@@ -124,10 +124,12 @@ interface RenderYamlOpts {
   renderValue?: "none" | "default" | "example" | "preferDefault" | "preferExample"
 }
 
+const normalizeTemplateStrings = (s: string | undefined) => (!!s ? s.replace(/\\\$\{/g, "${") : undefined)
+
 export function renderSchemaDescriptionYaml(
   schemaDescriptions: BaseKeyDescription[],
   {
-    commentOutEmpty = false,
+    onEmptyValue = "keep",
     filterMarkdown = false,
     presetValues = {},
     renderBasicDescription = false,
@@ -273,11 +275,15 @@ export function renderSchemaDescriptionYaml(
       keyAndValue.push(`${formattedName}:`)
     }
 
-    if (commentOutEmpty && !presetValue) {
+    if (onEmptyValue === "comment out" && !presetValue) {
       if (renderBasicDescription || renderFullDescription) {
         out.push("#")
       }
       keyAndValue = keyAndValue.map((line) => "# " + line)
+    }
+
+    if (onEmptyValue === "remove" && !presetValue) {
+      return
     }
 
     out.push(...keyAndValue)
@@ -292,7 +298,7 @@ export function renderSchemaDescriptionYaml(
 
       // Comment out the prefix if everything in the array will be commented out. Otherwise the output file
       // will include unwanted null values.
-      if (commentOutEmpty && parent && !getPresetValue(parent)) {
+      if (onEmptyValue === "comment out" && parent && !getPresetValue(parent)) {
         prefix = "#-"
       }
 
@@ -304,7 +310,7 @@ export function renderSchemaDescriptionYaml(
     return indented.join("\n")
   })
 
-  const schemaDescriptionYaml = output.join("\n")
+  const schemaDescriptionYaml = output.filter((l) => l !== undefined).join("\n")
 
   // NOTE: Because of an issue with GitBook, code examples inside YAML strings break the layout.
   // So something like:
@@ -343,7 +349,9 @@ export function renderConfigReference(
     name: undefined,
     level: 0,
   })
+
   const normalizedDescriptions = flattenSchema(desc, normalizeOpts)
+  normalizedDescriptions.forEach((d) => (d.description = normalizeTemplateStrings(d.description)))
 
   const yaml = renderSchemaDescriptionYaml(
     // Skip deprecated fields in the YAML description

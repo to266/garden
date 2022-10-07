@@ -12,7 +12,7 @@ A special module type, for rendering [module templates](../../using-garden/modul
 Specify the name of a ModuleTemplate with the `template` field, and provide any expected inputs using the `inputs` field. The generated modules becomes sub-modules of this module.
 
 Note that the following common Module configuration fields are disallowed for this module type:
-`build`, `description`, `include`, `exclude`, `repositoryUrl`, `allowPublish`, `generateFiles` and `variables`
+`build`, `description`, `include`, `exclude`, `repositoryUrl`, `allowPublish`, `generateFiles`, `variables` and `varfile`
 
 Below is the full schema reference. For an introduction to configuring Garden modules, please look at our [Configuration
 guide](../../using-garden/configuration-overview.md).
@@ -50,14 +50,17 @@ build:
           source:
 
           # POSIX-style path or filename to copy the directory or file(s), relative to the build directory.
-          # Defaults to to same as source path.
-          target: ''
+          # Defaults to the same as source path.
+          target:
+
+  # Maximum time in seconds to wait for build to finish.
+  timeout: 1200
 
 # A description of the module.
 description:
 
 # Set this to `true` to disable the module. You can use this with conditional template strings to disable modules
-# based on, for example, the current environment or other variables (e.g. `disabled: \${environment.name == "prod"}`).
+# based on, for example, the current environment or other variables (e.g. `disabled: ${environment.name == "prod"}`).
 # This can be handy when you only need certain modules for specific environments, e.g. only for development.
 #
 # Disabling a module means that any services, tasks and tests contained in it will not be deployed or run. It also
@@ -122,6 +125,11 @@ generateFiles:
     # directories, they will be automatically created if missing.
     targetPath:
 
+    # By default, Garden will attempt to resolve any Garden template strings in source files. Set this to false to
+    # skip resolving template strings. Note that this does not apply when setting the `value` field, since that's
+    # resolved earlier when parsing the configuration.
+    resolveTemplates: true
+
     # The desired file contents as a string.
     value:
 
@@ -129,6 +137,24 @@ generateFiles:
 # configuration and take precedence over project-scoped variables. They may reference project-scoped variables, and
 # generally use any template strings normally allowed when resolving modules.
 variables:
+
+# Specify a path (relative to the module root) to a file containing variables, that we apply on top of the
+# module-level `variables` field.
+#
+# The format of the files is determined by the configured file's extension:
+#
+# * `.env` - Standard "dotenv" format, as defined by [dotenv](https://github.com/motdotla/dotenv#rules).
+# * `.yaml`/`.yml` - YAML. The file must consist of a YAML document, which must be a map (dictionary). Keys may
+# contain any value type.
+# * `.json` - JSON. Must contain a single JSON _object_ (not an array).
+#
+# _NOTE: The default varfile format will change to YAML in Garden v0.13, since YAML allows for definition of nested
+# objects and arrays._
+#
+# To use different module-level varfiles in different environments, you can template in the environment name
+# to the varfile name, e.g. `varfile: "my-module.${environment.name}.env` (this assumes that the corresponding
+# varfiles exist).
+varfile:
 
 # The ModuleTemplate to use to generate the sub-modules of this module.
 template:
@@ -138,8 +164,8 @@ template:
 # Note: You can use template strings for the inputs, but be aware that inputs that are used to generate the resulting
 # module names and other top-level identifiers must be resolvable when scanning for modules, and thus cannot reference
 # other modules or runtime variables. See the [environment configuration context
-# reference](https://docs.garden.io/reference/template-strings#environment-configuration-context) to see template
-# strings that are safe to use for inputs used to generate module identifiers.
+# reference](../template-strings/environments.md) to see template strings that are safe to use for inputs used to
+# generate module identifiers.
 inputs:
 ```
 
@@ -249,11 +275,21 @@ POSIX-style path or filename of the directory or file(s) to copy to the target.
 [build](#build) > [dependencies](#builddependencies) > [copy](#builddependenciescopy) > target
 
 POSIX-style path or filename to copy the directory or file(s), relative to the build directory.
-Defaults to to same as source path.
+Defaults to the same as source path.
 
-| Type        | Default | Required |
-| ----------- | ------- | -------- |
-| `posixPath` | `""`    | No       |
+| Type        | Required |
+| ----------- | -------- |
+| `posixPath` | No       |
+
+### `build.timeout`
+
+[build](#build) > timeout
+
+Maximum time in seconds to wait for build to finish.
+
+| Type     | Default | Required |
+| -------- | ------- | -------- |
+| `number` | `1200`  | No       |
 
 ### `description`
 
@@ -265,7 +301,7 @@ A description of the module.
 
 ### `disabled`
 
-Set this to `true` to disable the module. You can use this with conditional template strings to disable modules based on, for example, the current environment or other variables (e.g. `disabled: \${environment.name == "prod"}`). This can be handy when you only need certain modules for specific environments, e.g. only for development.
+Set this to `true` to disable the module. You can use this with conditional template strings to disable modules based on, for example, the current environment or other variables (e.g. `disabled: ${environment.name == "prod"}`). This can be handy when you only need certain modules for specific environments, e.g. only for development.
 
 Disabling a module means that any services, tasks and tests contained in it will not be deployed or run. It also means that the module is not built _unless_ it is declared as a build dependency by another enabled module (in which case building this module is necessary for the dependant to be built).
 
@@ -321,9 +357,9 @@ A remote repository URL. Currently only supports git servers. Must contain a has
 
 Garden will import the repository source code into this module, but read the module's config from the local garden.yml file.
 
-| Type              | Required |
-| ----------------- | -------- |
-| `gitUrl | string` | No       |
+| Type               | Required |
+| ------------------ | -------- |
+| `gitUrl \| string` | No       |
 
 Example:
 
@@ -370,6 +406,16 @@ Note that any existing file with the same name will be overwritten. If the path 
 | ----------- | -------- |
 | `posixPath` | Yes      |
 
+### `generateFiles[].resolveTemplates`
+
+[generateFiles](#generatefiles) > resolveTemplates
+
+By default, Garden will attempt to resolve any Garden template strings in source files. Set this to false to skip resolving template strings. Note that this does not apply when setting the `value` field, since that's resolved earlier when parsing the configuration.
+
+| Type      | Default | Required |
+| --------- | ------- | -------- |
+| `boolean` | `true`  | No       |
+
 ### `generateFiles[].value`
 
 [generateFiles](#generatefiles) > value
@@ -388,6 +434,33 @@ A map of variables scoped to this particular module. These are resolved before a
 | -------- | -------- |
 | `object` | No       |
 
+### `varfile`
+
+Specify a path (relative to the module root) to a file containing variables, that we apply on top of the
+module-level `variables` field.
+
+The format of the files is determined by the configured file's extension:
+
+* `.env` - Standard "dotenv" format, as defined by [dotenv](https://github.com/motdotla/dotenv#rules).
+* `.yaml`/`.yml` - YAML. The file must consist of a YAML document, which must be a map (dictionary). Keys may contain any value type.
+* `.json` - JSON. Must contain a single JSON _object_ (not an array).
+
+_NOTE: The default varfile format will change to YAML in Garden v0.13, since YAML allows for definition of nested objects and arrays._
+
+To use different module-level varfiles in different environments, you can template in the environment name
+to the varfile name, e.g. `varfile: "my-module.${environment.name}.env` (this assumes that the corresponding
+varfiles exist).
+
+| Type        | Required |
+| ----------- | -------- |
+| `posixPath` | No       |
+
+Example:
+
+```yaml
+varfile: "my-module.env"
+```
+
 ### `template`
 
 The ModuleTemplate to use to generate the sub-modules of this module.
@@ -400,7 +473,7 @@ The ModuleTemplate to use to generate the sub-modules of this module.
 
 A map of inputs to pass to the ModuleTemplate. These must match the inputs schema of the ModuleTemplate.
 
-Note: You can use template strings for the inputs, but be aware that inputs that are used to generate the resulting module names and other top-level identifiers must be resolvable when scanning for modules, and thus cannot reference other modules or runtime variables. See the [environment configuration context reference](https://docs.garden.io/reference/template-strings#environment-configuration-context) to see template strings that are safe to use for inputs used to generate module identifiers.
+Note: You can use template strings for the inputs, but be aware that inputs that are used to generate the resulting module names and other top-level identifiers must be resolvable when scanning for modules, and thus cannot reference other modules or runtime variables. See the [environment configuration context reference](../template-strings/environments.md) to see template strings that are safe to use for inputs used to generate module identifiers.
 
 | Type     | Required |
 | -------- | -------- |
@@ -460,9 +533,9 @@ A map of all variables defined in the module.
 
 ### `${modules.<module-name>.var.<variable-name>}`
 
-| Type                                             |
-| ------------------------------------------------ |
-| `string | number | boolean | link | array[link]` |
+| Type                                                 |
+| ---------------------------------------------------- |
+| `string \| number \| boolean \| link \| array[link]` |
 
 ### `${modules.<module-name>.version}`
 

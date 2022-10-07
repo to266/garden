@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -70,8 +70,8 @@ describe("DashboardEventStream", () => {
       streamEvents: true,
       streamLogEntries: true,
       targets: [
-        { host: serverA.getUrl(), clientAuthToken: serverA.authKey, enterprise: false },
-        { host: serverB.getUrl(), clientAuthToken: serverB.authKey, enterprise: false },
+        { host: serverA.getBaseUrl(), clientAuthToken: serverA.authKey, enterprise: false },
+        { host: serverB.getBaseUrl(), clientAuthToken: serverB.authKey, enterprise: false },
       ],
     })
 
@@ -193,7 +193,9 @@ describe("DashboardEventStream", () => {
       await record.setCommand(values)
       await streamer.updateTargets()
 
-      garden.events.expectEvent("serversUpdated", { servers: [{ host: values.serverHost, command: "dashboard" }] })
+      garden.events.expectEvent("serversUpdated", {
+        servers: [{ host: values.serverHost, command: "dashboard", serverAuthKey: "foo" }],
+      })
     })
 
     it("ignores servers matching ignoreHost", async () => {

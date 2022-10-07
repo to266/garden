@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -18,6 +18,7 @@ import {
   V1StatefulSetSpec,
   V1DeploymentStatus,
   CoreV1Event,
+  V1DeploymentSpec,
 } from "@kubernetes/client-node"
 import dedent = require("dedent")
 import { getCurrentWorkloadPods } from "../util"
@@ -224,8 +225,9 @@ async function getRolloutStatus(workload: Workload) {
     }
   } else {
     const status = <V1DeploymentStatus>workload.status
+    const deploymentSpec = <V1DeploymentSpec>workload.spec
 
-    const desired = status.replicas || 0
+    const desired = deploymentSpec.replicas || 1
     const updated = status.updatedReplicas || 0
     const replicas = status.replicas || 0
     const available = status.availableReplicas || 0

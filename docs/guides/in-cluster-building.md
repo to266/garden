@@ -15,7 +15,7 @@ If in doubt, use the following setup for builds:
 
 - [**`kaniko`**](#kaniko) build mode, which works well for most scenarios.
 - Use the project namespace for build pods.
-- [Connect a remote deployment registry](#Configuring-a-deployment-registry) to use for built images. _Note: You can also skip this and use the included in-cluster registry while testing, but be aware that you may hit scaling issues as you go._
+- [Connect a remote deployment registry](#configuring-a-deployment-registry) to use for built images. _Note: You can also skip this and use the included in-cluster registry while testing, but be aware that you may hit scaling issues as you go._
 
 Here's a basic configuration example:
 
@@ -38,7 +38,7 @@ providers:
         namespace: default
 ```
 
-The only tricky bit would be connecting the remote registry, so we suggest reading more about that [below](#Configuring-a-deployment-registry).
+The only tricky bit would be connecting the remote registry, so we suggest reading more about that [below](#configuring-a-deployment-registry).
 
 ## Security considerations
 
@@ -78,7 +78,7 @@ The other modes—which are why you're reading this guide—all build your image
 
 The remote building options each have some pros and cons. You'll find more details below but **here are our general recommendations** at the moment:
 
-- [**`kaniko`**](#kaniko) is a solid choice for most cases and is _currently our first recommendation_. It is battle-tested among Garden's most demanding users (including the Garden team itself). It also scales horizontally and elastically, since individual Pods are created for each build. It doesn't require priviliged containers to run and requires no shared cluster-wide services.
+- [**`kaniko`**](#kaniko) is a solid choice for most cases and is _currently our first recommendation_. It is battle-tested among Garden's most demanding users (including the Garden team itself). It also scales horizontally and elastically, since individual Pods are created for each build. It doesn't require privileged containers to run and requires no shared cluster-wide services.
 - [**`cluster-buildkit`**](#cluster-buildkit) is a new addition and replaces the older `cluster-docker` mode. A [BuildKit](https://github.com/moby/buildkit) Deployment is dynamically created in each project namespace and much like Kaniko requires no other cluster-wide services. This mode also offers a _rootless_ option, which runs without any elevated privileges, in clusters that support it.
 
 We recommend picking a mode based on your usage patterns and scalability requirements. For ephemeral namespaces, `kaniko` is generally the better option, since the persistent BuildKit deployment won't have a warm cache anyway. For long-lived namespaces, like the ones a developer uses while working, `cluster-buildkit` may be a more performant option.
@@ -119,7 +119,7 @@ You can also select a different name for the cache repository and pass the path 
 This does not appear to be an issue for GCR on GCP. We haven't tested this on other container repositories.
 {% endhint %}
 
-You can provide extra arguments to Kaniko via the [`extraFlags`](../reference/providers/kubernetes.md#providerskanikoextraFlags) field. Users with projects with a large number of files should take a look at the `--snapshoteMode=redo` and `--use-new-run` options as these can provide [significant performance improvements](https://github.com/GoogleContainerTools/kaniko/releases/tag/v1.0.0). Please refer to the [official docs](https://github.com/GoogleContainerTools/kaniko#additional-flags) for the full list of available flags.
+You can provide extra arguments to Kaniko via the [`extraFlags`](../reference/providers/kubernetes.md#providerskanikoextraFlags) field. Users with projects with a large number of files should take a look at the `--snapshotMode=redo` and `--use-new-run` options as these can provide [significant performance improvements](https://github.com/GoogleContainerTools/kaniko/releases/tag/v1.0.0). Please refer to the [official docs](https://github.com/GoogleContainerTools/kaniko#additional-flags) for the full list of available flags.
 
 The Kaniko pods will always have the following toleration set:
 
@@ -169,6 +169,50 @@ effect: "NoSchedule"
 ```
 
 This allows you to set corresponding [Taints](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) on cluster nodes to control which nodes builder deployments are deployed to. You can also configure a [`nodeSelector`](../reference/providers/kubernetes.md#providersclusterbuildkitnodeselector) to serve the same purpose.
+
+#### Caching
+
+By default, cluster-buildkit will have two layers of cache
+
+1. A local file cache, maintained by the cluster-buildkit instance. The cache is shared for all builds in the same namespace
+2. A `_buildcache` image tag in the configured deploymentRegistry will be used as an external cache. This is useful for fresh namespaces, e.g. preview environments
+
+You can customize the cache configuration with the `cache` option. You can list multiple cache layers, and it will choose the first one that generates any hit for all following layers.
+
+In a large team it might be beneficial to use a more complicated cache strategy, for example the following:
+
+```yaml
+clusterBuildkit:
+  cache:
+      - type: registry
+        tag: _buildcache-${slice(kebabCase(git.branch), "0", "30")}
+      - type: registry
+        tag: _buildcache-main
+        export: false
+```
+
+With this configuration, every new feature branch will benefit from the main branch cache, while not polluting the main branch cache (via `export: false`).
+Any subsequent builds will use the feature branch cache.
+
+Please keep in mind that you should also configure a garbage collection policy in your Docker registry to clean old feature branch tags.
+
+#### Multi-stage caching
+
+If your `Dockerfile` has multiple stages, you can benefit from `mode=max` caching. It is automatically enabled, if your registry is not in our list of unsupported registries.
+Currently, those are AWS ECR and Google GCR. If you are using GCR, you can switch to the Google Artifact Registry, which supports `mode=max`.
+
+You can also configure a different cache registry for your images. That way you can keep using ECR or GCR, while having better cache hit rate with `mode=max`:
+
+```yaml
+clusterBuildkit:
+  cache:
+      - type: registry
+        registry:
+          hostname: hub.docker.com
+          namespace: my-team-cache
+```
+
+For this mode of operation you need secrets for all the registries configured in your `imagePullSecrets`.
 
 ### cluster-docker
 
@@ -241,7 +285,7 @@ Now say, if you specify `hostname: my-registry.com` and `namespace: my-project-i
 
 For this to work, you in most cases also need to provide the authentication necessary for both the cluster to read the image and for the builder to push to the registry. We use the same format and mechanisms as Kubernetes _imagePullSecrets_ for this. See [this guide](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/) for how to create the secret, **but keep in mind that for this context, the authentication provided must have write privileges to the configured registry and namespace.**
 
-See below for specific instruction for working with ECR.
+See below for specific instructions for working with ECR.
 
 {% hint style="warning" %}
 Note: If you're using the [`kaniko`](#kaniko) or [`cluster-docker`](#cluster-docker) build mode, you need to re-run `garden plugins kubernetes cluster-init` any time you add or modify imagePullSecrets, for them to work.
@@ -283,6 +327,37 @@ providers:
         namespace: default
 ```
 
+#### Configuring Access
+
+To grant your service account the right permission to push to ECR, add this policy to each of the repositories in the container registry that you want to use with in-cluster building:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowPushPull",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::<account-id>:role/<k8s_worker_iam_role>"                ]
+            },
+            "Action": [
+                "ecr:BatchGetImage",
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:CompleteLayerUpload",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:InitiateLayerUpload",
+                "ecr:PutImage",
+                "ecr:UploadLayerPart"
+            ]
+        }
+    ]
+}
+```
+
+To grant developers permission to push and pull directly from a repository, see [the AWS documentation](https://docs.aws.amazon.com/AmazonECR/latest/userguide/security_iam_id-based-policy-examples.html).
+
 ### Using in-cluster building with GCR
 
 To use in-cluster building with GCR (Google Container Registry) you need to set up authentication, with the following steps:
@@ -300,7 +375,7 @@ First, create a Google Service Account:
 gcloud iam service-accounts create gcr-access --project ${PROJECT_ID}
 ```
 
-Then, to grant the Google Service account the right permission to push to GCR, run the following GCR commands:
+Then, to grant the Google Service account the right permission to push to GCR, run the following gcloud commands:
 
 ```sh
 # Create a role with the required permissions
@@ -311,7 +386,7 @@ gcloud iam roles create gcrAccess \
 # Attach the role to the newly create Google Service Account
 gcloud projects add-iam-policy-binding ${PROJECT_ID} \
   --member=serviceAccount:gcr-access@${PROJECT_ID}.iam.gserviceaccount.com \
-  --role==projects/${PROJECT_ID}/roles/gcrAccess
+  --role=projects/${PROJECT_ID}/roles/gcrAccess
 ```
 
 Next create a JSON key file for the GSA:
@@ -340,6 +415,74 @@ providers:
     ...
     imagePullSecrets:
       - name: gcr-config
+        namespace: default
+```
+
+### Using in-cluster building with Google Artifact Registry
+
+To use in-cluster building with Google Artifact Registry you need to set up authentication, with the following steps:
+
+1. Create a Google Service Account (GSA).
+2. Give the GSA the appropriate permissions.
+3. Create a JSON key for the account.
+4. Create an _imagePullSecret_ for using the JSON key.
+5. Add a reference to the imagePullSecret to your Garden project configuration.
+
+First, create a Google Service Account:
+
+```sh
+# Of course you can replace the gar-access name, but make sure you also replace it in the commands below.
+gcloud iam service-accounts create gar-access --project ${PROJECT_ID}
+```
+
+The service account needs write access to the Google Artifacts Registry. You can either grant write access to all repositories with an IAM policy, or you can grant repository-specific permissions to selected repositories. We recommend the latter, as it follows the pattern of granting the least-privileged access needed.
+
+To grant access to all Google Artifact Registries, run:
+
+```sh
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member=serviceAccount:gar-access@${PROJECT_ID}.iam.gserviceaccount.com \
+  --role=roles/artifactregistry.writer
+```
+
+To grant access to one or more repositories, run for each repository:
+
+```sh
+gcloud artifacts repositories add-iam-policy-binding ${REPOSITORY} \
+  --location=${REGION} \
+  --member=serviceAccount:gar-access@${PROJECT_ID}.iam.gserviceaccount.com \
+  --role=roles/artifactregistry.writer
+```
+
+Next create a JSON key file for the GSA:
+
+```sh
+gcloud iam service-accounts keys create keyfile.json --iam-account gar-access@${PROJECT_ID}.iam.gserviceaccount.com
+```
+
+Then prepare the _imagePullSecret_ in your Kubernetes cluster. Run the following command and replace `docker.pkg.dev` with the correct registry hostname (e.g. `southamerica-east1-docker.pkg.dev` or `australia-southeast1-docker.pkg.dev`):
+
+```sh
+kubectl --namespace default create secret docker-registry gar-config \
+  --docker-server=docker.pkg.dev \
+  --docker-username=_json_key \
+  --docker-password="$(cat keyfile.json)"
+```
+
+Finally, add the created _imagePullSecret_ and _deploymentRegistry_ to your `kubernetes` provider configuration:
+
+```yaml
+kind: Project
+name: my-project
+...
+providers:
+  - name: kubernetes
+    ...
+    deploymentRegistry:
+      hostname: europe-central2-docker.pkg.dev      # <--- please replace with the hostname of your registry
+      namespace: ${PROJECT_ID}/${REPOSITORY}        # <--- please replace with your GCP project and repository
+    imagePullSecrets:
+      - name: gar-config
         namespace: default
 ```
 

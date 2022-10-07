@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -13,36 +13,43 @@ import { ConfigureModuleParams, ConfigureModuleResult } from "../../../types/plu
 import { GardenService } from "../../../types/service"
 import { baseBuildSpecSchema } from "../../../config/module"
 import { KubernetesResource } from "../types"
-import { deline, dedent } from "../../../util/string"
+import { dedent, deline } from "../../../util/string"
 import {
-  serviceResourceSchema,
-  kubernetesTaskSchema,
-  kubernetesTestSchema,
-  ServiceResourceSpec,
-  KubernetesTestSpec,
-  KubernetesTaskSpec,
-  namespaceNameSchema,
   containerModuleSchema,
   hotReloadArgsSchema,
-  serviceResourceDescription,
-  portForwardsSchema,
+  k8sDeploymentTimeoutSchema,
+  kubernetesDevModeSchema,
+  KubernetesDevModeSpec,
+  kubernetesLocalModeSchema,
+  KubernetesLocalModeSpec,
+  kubernetesTaskSchema,
+  KubernetesTaskSpec,
+  kubernetesTestSchema,
+  KubernetesTestSpec,
+  namespaceNameSchema,
   PortForwardSpec,
+  portForwardsSchema,
+  serviceResourceDescription,
+  serviceResourceSchema,
+  ServiceResourceSpec,
 } from "../config"
 import { ContainerModule } from "../../container/config"
-import { kubernetesDevModeSchema, KubernetesDevModeSpec } from "../dev-mode"
-import { KUBECTL_DEFAULT_TIMEOUT } from "../kubectl"
+import { KubernetesKustomizeSpec, kustomizeSpecSchema } from "./kustomize"
 
 // A Kubernetes Module always maps to a single Service
 export type KubernetesModuleSpec = KubernetesServiceSpec
 
 export interface KubernetesModule
   extends GardenModule<KubernetesModuleSpec, KubernetesServiceSpec, KubernetesTestSpec, KubernetesTaskSpec> {}
+
 export type KubernetesModuleConfig = KubernetesModule["_config"]
 
 export interface KubernetesServiceSpec {
   dependencies: string[]
   devMode?: KubernetesDevModeSpec
+  localMode?: KubernetesLocalModeSpec
   files: string[]
+  kustomize?: KubernetesKustomizeSpec
   manifests: KubernetesResource[]
   namespace?: string
   portForwards?: PortForwardSpec[]
@@ -75,6 +82,7 @@ export const kubernetesModuleSpecSchema = () =>
     build: baseBuildSpecSchema(),
     dependencies: dependenciesSchema(),
     devMode: kubernetesDevModeSchema(),
+    localMode: kubernetesLocalModeSchema(),
     files: joiSparseArray(joi.posixPath().subPathOnly()).description(
       "POSIX-style paths to YAML files to load manifests from. Each can contain multiple manifests, and can include any Garden template strings, which will be resolved before applying the manifests."
     ),
@@ -82,6 +90,7 @@ export const kubernetesModuleSpecSchema = () =>
       If neither \`include\` nor \`exclude\` is set, Garden automatically sets \`include\` to equal the
       \`files\` directive so that only the Kubernetes manifests get included.
     `),
+    kustomize: kustomizeSpecSchema(),
     manifests: joiSparseArray(kubernetesResourceSchema()).description(
       deline`
           List of Kubernetes resource manifests to deploy. Use this instead of the \`files\` field if you need to
@@ -105,17 +114,16 @@ export const kubernetesModuleSpecSchema = () =>
       }),
     tasks: joiSparseArray(kubernetesTaskSchema()),
     tests: joiSparseArray(kubernetesTestSchema()),
-    timeout: joi
-      .number()
-      .default(KUBECTL_DEFAULT_TIMEOUT)
-      .description("The maximum duration (in seconds) to wait for resources to deploy and become healthy."),
+    timeout: k8sDeploymentTimeoutSchema(),
   })
 
 export async function configureKubernetesModule({
   moduleConfig,
 }: ConfigureModuleParams<KubernetesModule>): Promise<ConfigureModuleResult<KubernetesModule>> {
-  const { serviceResource } = moduleConfig.spec
+  const { serviceResource, kustomize } = moduleConfig.spec
   const sourceModuleName = serviceResource ? serviceResource.containerModule : undefined
+
+  // TODO-G2: validate serviceResource.containerModule to be a build dependency
 
   moduleConfig.serviceConfigs = [
     {
@@ -129,9 +137,11 @@ export async function configureKubernetesModule({
       spec: moduleConfig.spec,
     },
   ]
-  // Unless include is explicitly specified, we should just have it equal the `files` field
-  if (!(moduleConfig.include || moduleConfig.exclude)) {
-    moduleConfig.include = moduleConfig.spec.files
+
+  // Unless include is explicitly specified and we're not using kustomize, we just have it equal the `files` field.
+  // If we are using kustomize, it's not really feasible to extract an include list, so we need the user to do it.
+  if (!(moduleConfig.include || moduleConfig.exclude) && !kustomize) {
+    moduleConfig.include = [...(moduleConfig.spec.files || [])]
   }
 
   moduleConfig.taskConfigs = moduleConfig.spec.tasks.map((t) => ({

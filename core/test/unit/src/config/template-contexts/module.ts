@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -18,6 +18,7 @@ import { resolveTemplateString } from "../../../../../src/template-string/templa
 import { ModuleConfigContext } from "../../../../../src/config/template-contexts/module"
 import { WorkflowConfigContext, WorkflowStepConfigContext } from "../../../../../src/config/template-contexts/workflow"
 import { GardenModule } from "../../../../../src/types/module"
+import { ConfigGraph } from "../../../../../src/config-graph"
 
 type TestValue = string | ConfigContext | TestValues | TestValueFunction
 type TestValueFunction = () => TestValue | Promise<TestValue>
@@ -25,20 +26,18 @@ interface TestValues {
   [key: string]: TestValue
 }
 
-let currentBranch: string
-
 describe("ModuleConfigContext", () => {
   let garden: TestGarden
+  let graph: ConfigGraph
   let c: ModuleConfigContext
   let module: GardenModule
 
   before(async () => {
     garden = await makeTestGardenA()
     garden["secrets"] = { someSecret: "someSecretValue" }
-    const graph = await garden.getConfigGraph({ log: garden.log, emit: false })
+    graph = await garden.getConfigGraph({ log: garden.log, emit: false })
     const modules = graph.getModules()
     module = graph.getModule("module-b")
-    currentBranch = garden.vcsBranch
 
     c = new ModuleConfigContext({
       garden,
@@ -59,6 +58,12 @@ describe("ModuleConfigContext", () => {
     delete process.env.TEST_VARIABLE
   })
 
+  it("should resolve the local arch", async () => {
+    expect(c.resolve({ key: ["local", "arch"], nodePath: [], opts: {} })).to.eql({
+      resolved: process.arch,
+    })
+  })
+
   it("should resolve the local platform", async () => {
     expect(c.resolve({ key: ["local", "platform"], nodePath: [], opts: {} })).to.eql({
       resolved: process.platform,
@@ -73,7 +78,7 @@ describe("ModuleConfigContext", () => {
 
   it("should resolve the current git branch", () => {
     expect(c.resolve({ key: ["git", "branch"], nodePath: [], opts: {} })).to.eql({
-      resolved: currentBranch,
+      resolved: garden.vcsInfo.branch,
     })
   })
 
@@ -83,8 +88,7 @@ describe("ModuleConfigContext", () => {
   })
 
   it("should should resolve the version of a module", async () => {
-    const config = await garden.resolveModule("module-a")
-    const { versionString } = await garden.resolveModuleVersion(config, [])
+    const { versionString } = graph.getModule("module-a").version
     expect(c.resolve({ key: ["modules", "module-a", "version"], nodePath: [], opts: {} })).to.eql({
       resolved: versionString,
     })
@@ -135,7 +139,6 @@ describe("ModuleConfigContext", () => {
     let serviceA: GardenService
 
     before(async () => {
-      const graph = await garden.getConfigGraph({ log: garden.log, emit: false })
       const modules = graph.getModules()
       serviceA = graph.getService("service-a")
       const serviceB = graph.getService("service-b")
@@ -240,7 +243,7 @@ describe("WorkflowConfigContext", () => {
 
   it("should resolve the current git branch", () => {
     expect(c.resolve({ key: ["git", "branch"], nodePath: [], opts: {} })).to.eql({
-      resolved: currentBranch,
+      resolved: garden.vcsInfo.branch,
     })
   })
 

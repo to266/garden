@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -16,7 +16,6 @@ import { Garden } from "../../../../../src/garden"
 import { ConfigGraph } from "../../../../../src/config-graph"
 import { deline, randomString, dedent } from "../../../../../src/util/string"
 import { runAndCopy, PodRunner, prepareRunPodSpec } from "../../../../../src/plugins/kubernetes/run"
-import { containerHelpers } from "../../../../../src/plugins/container/helpers"
 import { KubeApi } from "../../../../../src/plugins/kubernetes/api"
 import {
   KubernetesPluginContext,
@@ -38,7 +37,7 @@ import {
 } from "../../../../../src/plugins/kubernetes/types"
 import { PluginContext } from "../../../../../src/plugin-context"
 import { LogEntry } from "../../../../../src/logger/log-entry"
-import { sleep, StringCollector } from "../../../../../src/util/util"
+import { sleep } from "../../../../../src/util/util"
 import { buildHelmModules, getHelmTestGarden } from "./helm/common"
 import { getBaseModule, getChartResources } from "../../../../../src/plugins/kubernetes/helm/common"
 import { getModuleNamespace } from "../../../../../src/plugins/kubernetes/namespace"
@@ -252,7 +251,7 @@ describe("kubernetes Pod runner functions", () => {
           provider,
         })
 
-        const res = await runner.runAndWait({ log, remove: true, tty: false })
+        const res = await runner.runAndWait({ log, remove: true, tty: false, events: ctx.events })
 
         expect(res.log.trim()).to.equal("foo")
         expect(res.success).to.be.true
@@ -269,48 +268,10 @@ describe("kubernetes Pod runner functions", () => {
           provider,
         })
 
-        const res = await runner.runAndWait({ log, remove: true, tty: false })
+        const res = await runner.runAndWait({ log, remove: true, tty: false, events: ctx.events })
 
         expect(res.log.trim()).to.equal("foo")
         expect(res.success).to.be.false
-      })
-
-      it("can attach to the Pod and stream outputs", async () => {
-        const pod = makePod([
-          "/bin/sh",
-          "-c",
-          dedent`
-            for i in 1 2 3 4 5
-            do
-              echo "Log line $i"
-              sleep 1
-            done
-          `,
-        ])
-
-        runner = new PodRunner({
-          ctx,
-          pod,
-          namespace,
-          api,
-          provider,
-        })
-
-        const stdout = new StringCollector()
-
-        const res = await runner.runAndWait({ log, remove: true, stdout, tty: false })
-
-        const output = stdout.getString()
-
-        expect(output).to.include("Log line")
-        expect(res.log.trim()).to.equal(dedent`
-          Log line 1
-          Log line 2
-          Log line 3
-          Log line 4
-          Log line 5
-        `)
-        expect(res.success).to.be.true
       })
 
       it("throws if Pod is invalid", async () => {
@@ -339,7 +300,7 @@ describe("kubernetes Pod runner functions", () => {
         })
 
         await expectError(
-          () => runner.runAndWait({ log, remove: true, tty: false }),
+          () => runner.runAndWait({ log, remove: true, tty: false, events: ctx.events }),
           (err) => expect(err.message).to.include("Failed to create Pod")
         )
       })
@@ -357,7 +318,7 @@ describe("kubernetes Pod runner functions", () => {
         })
 
         await expectError(
-          () => runner.runAndWait({ log, remove: true, tty: false }),
+          () => runner.runAndWait({ log, remove: true, tty: false, events: ctx.events }),
           (err) => expect(err.message).to.include("Failed to start Pod")
         )
       })
@@ -433,7 +394,7 @@ describe("kubernetes Pod runner functions", () => {
         td.when(core.readNamespacedPodStatus(runner.podName, namespace)).thenResolve(readNamespacedPodStatusRes)
 
         await expectError(
-          () => runner.runAndWait({ log, remove: true, tty: false }),
+          () => runner.runAndWait({ log, remove: true, tty: false, events: ctx.events }),
           (err) => {
             expect(err.type).to.eql("out-of-memory")
             expect(err.message).to.include("OOMKilled")
@@ -512,7 +473,7 @@ describe("kubernetes Pod runner functions", () => {
         td.when(core.readNamespacedPodStatus(runner.podName, namespace)).thenResolve(readNamespacedPodStatusRes)
 
         await expectError(
-          () => runner.runAndWait({ log, remove: true, tty: false }),
+          () => runner.runAndWait({ log, remove: true, tty: false, events: ctx.events }),
           (err) => {
             expect(err.type).to.eql("out-of-memory")
             expect(err.message).to.include("OOMKilled")
@@ -542,7 +503,7 @@ describe("kubernetes Pod runner functions", () => {
             provider,
           })
 
-          const res = await runner.runAndWait({ log, remove: true, tty: true })
+          const res = await runner.runAndWait({ log, remove: true, tty: true, events: ctx.events })
 
           expect(res.log.trim().replace(/\r\n/g, "\n")).to.equal(dedent`
             Log line 1
@@ -598,6 +559,7 @@ describe("kubernetes Pod runner functions", () => {
         module: helmModule,
         devMode: false,
         hotReload: false,
+        localMode: false,
         log: helmLog,
         version: helmModule.version.versionString,
       })
@@ -759,6 +721,63 @@ describe("kubernetes Pod runner functions", () => {
           },
         ],
         shareProcessNamespace: true,
+        imagePullSecrets: [],
+        volumes: [],
+      })
+    })
+
+    it("should apply security context fields to the main container when provided", async () => {
+      const generatedPodSpec = await prepareRunPodSpec({
+        podSpec: undefined,
+        getArtifacts: false,
+        api: helmApi,
+        provider: helmProvider,
+        log: helmLog,
+        module: helmModule,
+        args: ["sh", "-c"],
+        command: ["echo", "foo"],
+        runtimeContext: { envVars: {}, dependencies: [] },
+        envVars: {},
+        resources, // <---
+        description: "Helm module",
+        errorMetadata: {},
+        mainContainerName: "main",
+        image: "foo",
+        container: helmContainer,
+        namespace: helmNamespace,
+        volumes: [],
+        privileged: true, // <----
+        addCapabilities: ["SYS_TIME"], // <----
+        dropCapabilities: ["NET_ADMIN"], // <----
+      })
+
+      expect(generatedPodSpec).to.eql({
+        containers: [
+          {
+            name: "main",
+            image: "foo",
+            imagePullPolicy: "IfNotPresent",
+            args: ["sh", "-c"],
+            ports: [
+              {
+                name: "http",
+                containerPort: 80,
+                protocol: "TCP",
+              },
+            ],
+            resources: getResourceRequirements(resources),
+            env: [],
+            volumeMounts: [],
+            command: ["echo", "foo"],
+            securityContext: {
+              privileged: true,
+              capabilities: {
+                add: ["SYS_TIME"],
+                drop: ["NET_ADMIN"],
+              },
+            },
+          },
+        ],
         imagePullSecrets: [],
         volumes: [],
       })
@@ -1018,7 +1037,6 @@ describe("kubernetes Pod runner functions", () => {
       it("should clean up the created Pod", async () => {
         const task = graph.getTask("artifacts-task")
         const module = task.module
-
         const podName = makePodName("test", module.name)
 
         await runAndCopy({
@@ -1191,7 +1209,7 @@ describe("kubernetes Pod runner functions", () => {
       it("should throw when container doesn't contain sh", async () => {
         const task = graph.getTask("missing-sh-task")
         const module = task.module
-        const _image = containerHelpers.getDeploymentImageId(module, module.version, provider.config.deploymentRegistry)
+        const _image = module.outputs["deployment-image-id"]
 
         const actions = await garden.getActionRouter()
         await garden.buildStaging.syncFromSrc(module, garden.log)
@@ -1231,7 +1249,7 @@ describe("kubernetes Pod runner functions", () => {
       it("should throw when container doesn't contain tar", async () => {
         const task = graph.getTask("missing-tar-task")
         const module = task.module
-        const _image = containerHelpers.getDeploymentImageId(module, module.version, provider.config.deploymentRegistry)
+        const _image = module.outputs["deployment-image-id"]
 
         const actions = await garden.getActionRouter()
         await garden.buildStaging.syncFromSrc(module, garden.log)

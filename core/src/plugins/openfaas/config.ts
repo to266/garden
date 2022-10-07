@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -13,11 +13,12 @@ import { PluginContext } from "../../plugin-context"
 import { joiProviderName, joi, joiEnvVars, DeepPrimitiveMap, joiSparseArray } from "../../config/common"
 import { GardenModule } from "../../types/module"
 import { GardenService } from "../../types/service"
-import { ExecModuleSpecBase, ExecTestSpec } from "../exec"
+import { ExecModuleSpecBase, ExecTestSpec } from "../exec/exec"
 import { CommonServiceSpec } from "../../config/service"
 import { Provider, providerConfigBaseSchema, GenericProviderConfig } from "../../config/provider"
 import { union } from "lodash"
 import { ContainerModule } from "../container/config"
+import { k8sGetContainerModuleOutputs } from "../kubernetes/container/handlers"
 import { ConfigureModuleParams, ConfigureModuleResult } from "../../types/plugin/module/configure"
 import { getNamespaceStatus } from "../kubernetes/namespace"
 import { LogEntry } from "../../logger/log-entry"
@@ -26,6 +27,7 @@ import { DEFAULT_BUILD_TIMEOUT } from "../container/helpers"
 import { baseTestSpecSchema } from "../../config/test"
 import { getK8sProvider } from "../kubernetes/util"
 import { GetModuleOutputsParams } from "../../types/plugin/module/getModuleOutputs"
+import { KubernetesPluginContext } from "../kubernetes/config"
 
 export interface OpenFaasModuleSpec extends ExecModuleSpecBase {
   handler: string
@@ -37,7 +39,7 @@ export interface OpenFaasModuleSpec extends ExecModuleSpecBase {
 const openfaasTestSchema = () =>
   baseTestSpecSchema().keys({
     command: joi
-      .array()
+      .sparseArray()
       .items(joi.string())
       .description("The command to run in the module build context in order to test it.")
       .required(),
@@ -137,7 +139,11 @@ export const configSchema = () =>
 export type OpenFaasProvider = Provider<OpenFaasConfig>
 export type OpenFaasPluginContext = PluginContext<OpenFaasConfig>
 
-export function getContainerModule(module: OpenFaasModule): ContainerModule {
+export async function getContainerModule(
+  ctx: KubernetesPluginContext,
+  log: LogEntry,
+  module: OpenFaasModule
+): Promise<ContainerModule> {
   const containerModule = {
     ...module,
     spec: {
@@ -155,8 +161,16 @@ export function getContainerModule(module: OpenFaasModule): ContainerModule {
     },
   }
 
+  const { outputs } = await k8sGetContainerModuleOutputs({
+    moduleConfig: containerModule,
+    log,
+    ctx,
+    version: module.version,
+  })
+
   return {
     ...containerModule,
+    outputs,
     buildPath: join(module.buildPath, "build", module.name),
     _config: {
       ...containerModule,
@@ -174,6 +188,7 @@ export async function configureModule({
   ctx,
   moduleConfig,
 }: ConfigureModuleParams<OpenFaasModule>): Promise<ConfigureModuleResult> {
+  // TODO-G2: avoid this somehow
   moduleConfig.build.dependencies.push({
     name: "templates",
     plugin: ctx.provider.name,

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -66,11 +66,11 @@ export class CallCommand extends Command<Args> {
     printHeader(headerLog, "Call", "telephone_receiver")
   }
 
-  async action({ garden, isWorkflowStepCommand, log, args }: CommandParams<Args>): Promise<CommandResult<CallResult>> {
+  async action({ garden, log, args }: CommandParams<Args>): Promise<CommandResult<CallResult>> {
     let [serviceName, path] = splitFirst(args.serviceAndPath, "/")
 
     // TODO: better error when service doesn't exist
-    const graph = await garden.getConfigGraph({ log, emit: !isWorkflowStepCommand })
+    const graph = await garden.getConfigGraph({ log, emit: true })
     const service = graph.getService(serviceName)
     // No need for full context, since we're just checking if the service is running.
     const runtimeContext = emptyRuntimeContext
@@ -81,6 +81,7 @@ export class CallCommand extends Command<Args> {
       graph,
       devMode: false,
       hotReload: false,
+      localMode: false,
       runtimeContext,
     })
 

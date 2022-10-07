@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -24,6 +24,7 @@ type WrappedFromGarden = Pick<
   | "projectRoot"
   | "gardenDirPath"
   | "workingCopyId"
+  | "cloudApi"
   // TODO: remove this from the interface
   | "environmentName"
   | "production"
@@ -88,6 +89,7 @@ export const pluginContextSchema = () =>
       sessionId: joi.string().description("The unique ID of the currently active session."),
       tools: joiStringMap(joi.object()),
       workingCopyId: joi.string().description("A unique ID assigned to the current project working copy."),
+      cloudApi: joi.any().optional(),
     })
 
 interface PluginEvents {
@@ -123,5 +125,6 @@ export async function createPluginContext(
     sessionId: garden.sessionId,
     tools: await garden.getTools(),
     workingCopyId: garden.workingCopyId,
+    cloudApi: garden.cloudApi,
   }
 }

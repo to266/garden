@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,27 +7,42 @@
  */
 
 import { expect } from "chai"
-import { join } from "path"
 import { Garden } from "../../../../../../src/garden"
 import { ConfigGraph } from "../../../../../../src/config-graph"
 import { emptyRuntimeContext } from "../../../../../../src/runtime-context"
 import { KubeApi } from "../../../../../../src/plugins/kubernetes/api"
-import { createWorkloadManifest } from "../../../../../../src/plugins/kubernetes/container/deployment"
+import {
+  createContainerManifests,
+  createWorkloadManifest,
+} from "../../../../../../src/plugins/kubernetes/container/deployment"
 import { KubernetesPluginContext, KubernetesProvider } from "../../../../../../src/plugins/kubernetes/config"
-import { V1Secret } from "@kubernetes/client-node"
-import { KubernetesResource } from "../../../../../../src/plugins/kubernetes/types"
+import { V1ConfigMap, V1Secret } from "@kubernetes/client-node"
+import { KubernetesResource, KubernetesWorkload } from "../../../../../../src/plugins/kubernetes/types"
 import { cloneDeep, keyBy } from "lodash"
 import { getContainerTestGarden } from "./container"
 import { DeployTask } from "../../../../../../src/tasks/deploy"
 import { getServiceStatuses } from "../../../../../../src/tasks/base"
 import { expectError, grouped } from "../../../../../helpers"
-import stripAnsi = require("strip-ansi")
-import { gardenAnnotationKey } from "../../../../../../src/util/string"
-import { getContainerServiceStatus } from "../../../../../../src/plugins/kubernetes/container/status"
-import { sleep } from "../../../../../../src/util/util"
-import { pathExists, readFile, remove, writeFile } from "fs-extra"
-import { execInWorkload, kilobytesToString, millicpuToString } from "../../../../../../src/plugins/kubernetes/util"
+import { kilobytesToString, millicpuToString } from "../../../../../../src/plugins/kubernetes/util"
 import { getResourceRequirements } from "../../../../../../src/plugins/kubernetes/container/util"
+import { isConfiguredForDevMode } from "../../../../../../src/plugins/kubernetes/status/status"
+import { ContainerService } from "../../../../../../src/plugins/container/config"
+import { apply } from "../../../../../../src/plugins/kubernetes/kubectl"
+import { getAppNamespace } from "../../../../../../src/plugins/kubernetes/namespace"
+import { gardenAnnotationKey } from "../../../../../../src/util/string"
+import {
+  k8sReverseProxyImageName,
+  k8sSyncUtilImageName,
+  PROXY_CONTAINER_SSH_TUNNEL_PORT,
+  PROXY_CONTAINER_SSH_TUNNEL_PORT_NAME,
+  PROXY_CONTAINER_USER_NAME,
+} from "../../../../../../src/plugins/kubernetes/constants"
+import {
+  LocalModeEnv,
+  LocalModeProcessRegistry,
+  ProxySshKeystore,
+} from "../../../../../../src/plugins/kubernetes/local-mode"
+import stripAnsi = require("strip-ansi")
 
 describe("kubernetes container deployment handlers", () => {
   let garden: Garden
@@ -53,6 +68,203 @@ describe("kubernetes container deployment handlers", () => {
     api = await KubeApi.factory(garden.log, ctx, provider)
   }
 
+  describe("createContainerManifests", () => {
+    before(async () => {
+      await init("local")
+    })
+
+    afterEach(async () => {
+      LocalModeProcessRegistry.getInstance().shutdown()
+      ProxySshKeystore.getInstance(garden.log).shutdown(garden.log)
+    })
+
+    function expectSshContainerPort(workload: KubernetesWorkload) {
+      const appContainerSpec = workload.spec.template?.spec?.containers.find((c) => c.name === "local-mode")
+      const workloadSshPort = appContainerSpec!.ports!.find((p) => p.name === PROXY_CONTAINER_SSH_TUNNEL_PORT_NAME)
+      expect(workloadSshPort!.containerPort).to.eql(PROXY_CONTAINER_SSH_TUNNEL_PORT)
+    }
+
+    function expectEmptyContainerArgs(workload: KubernetesWorkload) {
+      const appContainerSpec = workload.spec.template?.spec?.containers.find((c) => c.name === "local-mode")
+      expect(appContainerSpec!.args).to.eql([])
+    }
+
+    function expectProxyContainerImage(workload: KubernetesWorkload) {
+      const appContainerSpec = workload.spec.template?.spec?.containers.find((c) => c.name === "local-mode")
+      expect(appContainerSpec!.image).to.eql(k8sReverseProxyImageName)
+    }
+
+    function expectContainerEnvVars(workload: KubernetesWorkload) {
+      const appContainerSpec = workload.spec.template?.spec?.containers.find((c) => c.name === "local-mode")
+      const env = appContainerSpec!.env!
+
+      const httpPort = appContainerSpec!.ports!.find((p) => p.name === "http")!.containerPort.toString()
+      const appPortEnvVar = env.find((v) => v.name === LocalModeEnv.GARDEN_REMOTE_CONTAINER_PORTS)!.value
+      expect(appPortEnvVar).to.eql(httpPort)
+
+      const proxyUserEnvVar = env.find((v) => v.name === LocalModeEnv.GARDEN_PROXY_CONTAINER_USER_NAME)!.value
+      expect(proxyUserEnvVar).to.eql(PROXY_CONTAINER_USER_NAME)
+
+      const publicKeyEnvVar = env.find((v) => v.name === LocalModeEnv.GARDEN_PROXY_CONTAINER_PUBLIC_KEY)!.value
+      expect(!!publicKeyEnvVar).to.be.true
+    }
+
+    function expectNoProbes(workload: KubernetesWorkload) {
+      const appContainerSpec = workload.spec.template?.spec?.containers.find((c) => c.name === "local-mode")
+      expect(appContainerSpec!.livenessProbe).to.be.undefined
+      expect(appContainerSpec!.readinessProbe).to.be.undefined
+    }
+
+    context("with localMode only", () => {
+      it("Workflow should have ssh container port when in local mode", async () => {
+        const service = graph.getService("local-mode")
+
+        const { workload } = await createContainerManifests({
+          ctx,
+          api,
+          service,
+          log: garden.log,
+          runtimeContext: emptyRuntimeContext,
+          enableDevMode: false,
+          enableHotReload: false,
+          enableLocalMode: true, // <----
+          blueGreen: false,
+        })
+
+        expectSshContainerPort(workload)
+      })
+
+      it("Workflow should have empty container args when in local mode", async () => {
+        const service = graph.getService("local-mode")
+
+        const { workload } = await createContainerManifests({
+          ctx,
+          api,
+          service,
+          log: garden.log,
+          runtimeContext: emptyRuntimeContext,
+          enableDevMode: false,
+          enableHotReload: false,
+          enableLocalMode: true, // <----
+          blueGreen: false,
+        })
+
+        expectEmptyContainerArgs(workload)
+      })
+
+      it("Workflow should have extra env vars for proxy container when in local mode", async () => {
+        const service = graph.getService("local-mode")
+
+        const { workload } = await createContainerManifests({
+          ctx,
+          api,
+          service,
+          log: garden.log,
+          runtimeContext: emptyRuntimeContext,
+          enableDevMode: false,
+          enableHotReload: false,
+          enableLocalMode: true, // <----
+          blueGreen: false,
+        })
+
+        expectContainerEnvVars(workload)
+      })
+
+      it("Workflow should not have liveness and readiness probes when in local mode", async () => {
+        const service = graph.getService("local-mode")
+
+        const { workload } = await createContainerManifests({
+          ctx,
+          api,
+          service,
+          log: garden.log,
+          runtimeContext: emptyRuntimeContext,
+          enableDevMode: false,
+          enableHotReload: false,
+          enableLocalMode: true, // <----
+          blueGreen: false,
+        })
+
+        expectNoProbes(workload)
+      })
+    })
+
+    context("localMode always takes precedence over devMode", () => {
+      it("Workflow should have ssh container port when in local mode", async () => {
+        const service = graph.getService("local-mode")
+
+        const { workload } = await createContainerManifests({
+          ctx,
+          api,
+          service,
+          log: garden.log,
+          runtimeContext: emptyRuntimeContext,
+          enableDevMode: true, // <----
+          enableHotReload: false,
+          enableLocalMode: true, // <----
+          blueGreen: false,
+        })
+
+        expectSshContainerPort(workload)
+      })
+
+      it("Workflow should have proxy container image and empty container args when in local mode", async () => {
+        const service = graph.getService("local-mode")
+
+        const { workload } = await createContainerManifests({
+          ctx,
+          api,
+          service,
+          log: garden.log,
+          runtimeContext: emptyRuntimeContext,
+          enableDevMode: true, // <----
+          enableHotReload: false,
+          enableLocalMode: true, // <----
+          blueGreen: false,
+        })
+
+        expectProxyContainerImage(workload)
+        expectEmptyContainerArgs(workload)
+      })
+
+      it("Workflow should have extra env vars for proxy container when in local mode", async () => {
+        const service = graph.getService("local-mode")
+
+        const { workload } = await createContainerManifests({
+          ctx,
+          api,
+          service,
+          log: garden.log,
+          runtimeContext: emptyRuntimeContext,
+          enableDevMode: true, // <----
+          enableHotReload: false,
+          enableLocalMode: true, // <----
+          blueGreen: false,
+        })
+
+        expectContainerEnvVars(workload)
+      })
+
+      it("Workflow should not have liveness and readiness probes when in local mode", async () => {
+        const service = graph.getService("local-mode")
+
+        const { workload } = await createContainerManifests({
+          ctx,
+          api,
+          service,
+          log: garden.log,
+          runtimeContext: emptyRuntimeContext,
+          enableDevMode: true, // <----
+          enableHotReload: false,
+          enableLocalMode: true, // <----
+          blueGreen: false,
+        })
+
+        expectNoProbes(workload)
+      })
+    })
+  })
+
   describe("createWorkloadManifest", () => {
     before(async () => {
       await init("local")
@@ -70,6 +282,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: false,
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
@@ -142,6 +355,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: false,
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
@@ -169,6 +383,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: false,
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
@@ -177,6 +392,37 @@ describe("kubernetes container deployment handlers", () => {
       expect(resource.spec.template?.spec?.containers[0].resources?.limits).to.eql({
         cpu: millicpuToString(limits.cpu),
         memory: kilobytesToString(limits.memory * 1024),
+      })
+    })
+
+    it("should apply security context fields if specified", async () => {
+      const service = graph.getService("simple-service")
+      const namespace = provider.config.namespace!.name!
+      service.spec.privileged = true
+      service.spec.addCapabilities = ["SYS_TIME"]
+      service.spec.dropCapabilities = ["NET_ADMIN"]
+
+      const resource = await createWorkloadManifest({
+        api,
+        provider,
+        service,
+        runtimeContext: emptyRuntimeContext,
+        namespace,
+        enableDevMode: false,
+        enableHotReload: false,
+        enableLocalMode: false,
+        log: garden.log,
+        production: false,
+        blueGreen: false,
+      })
+
+      expect(resource.spec.template?.spec?.containers[0].securityContext).to.eql({
+        allowPrivilegeEscalation: true,
+        privileged: true,
+        capabilities: {
+          add: ["SYS_TIME"],
+          drop: ["NET_ADMIN"],
+        },
       })
     })
 
@@ -192,6 +438,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: false,
         enableHotReload: true,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
@@ -224,12 +471,13 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: true, // <----
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
       })
 
-      expect(resource.metadata.annotations![gardenAnnotationKey("dev-mode")]).to.eq("true")
+      expect(isConfiguredForDevMode(resource)).to.eq(true)
 
       const initContainer = resource.spec.template?.spec?.initContainers![0]
       expect(initContainer).to.exist
@@ -240,7 +488,7 @@ describe("kubernetes container deployment handlers", () => {
       expect(resource.spec.template?.spec?.initContainers).to.eql([
         {
           name: "garden-dev-init",
-          image: "gardendev/k8s-sync:0.1.1",
+          image: k8sSyncUtilImageName,
           command: ["/bin/sh", "-c", "cp /usr/local/bin/mutagen-agent /.garden/mutagen-agent"],
           imagePullPolicy: "IfNotPresent",
           volumeMounts: [
@@ -269,6 +517,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: true, // <----
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
@@ -299,6 +548,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: false,
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: true,
@@ -345,6 +595,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: false,
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
@@ -385,6 +636,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: false,
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
@@ -407,6 +659,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: false,
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
@@ -430,6 +683,7 @@ describe("kubernetes container deployment handlers", () => {
         namespace,
         enableDevMode: false,
         enableHotReload: false,
+        enableLocalMode: false,
         log: garden.log,
         production: false,
         blueGreen: false,
@@ -462,6 +716,7 @@ describe("kubernetes container deployment handlers", () => {
             namespace,
             enableDevMode: false,
             enableHotReload: false,
+            enableLocalMode: false,
             log: garden.log,
             production: false,
             blueGreen: false,
@@ -492,6 +747,7 @@ describe("kubernetes container deployment handlers", () => {
           forceBuild: false,
           devModeServiceNames: [],
           hotReloadServiceNames: [],
+          localModeServiceNames: [],
         })
 
         const results = await garden.processTasks([deployTask], { throwOnError: true })
@@ -510,6 +766,102 @@ describe("kubernetes container deployment handlers", () => {
         ])
       })
 
+      it("should prune previously applied resources when deploying", async () => {
+        const log = garden.log
+        const service = graph.getService("simple-service")
+        const namespace = await getAppNamespace(ctx, log, provider)
+
+        const mapToNotPruneKey = "should-not-be-pruned"
+        const mapToPruneKey = "should-be-pruned"
+
+        const labels = { [gardenAnnotationKey("service")]: service.name }
+
+        // This `ConfigMap` is created through `kubectl apply` below, which will add the
+        // "kubectl.kubernetes.io/last-applied-configuration" annotation. We don't prune resources that lack this
+        // annotation.
+        const configMapToPrune: KubernetesResource<V1ConfigMap> = {
+          apiVersion: "v1",
+          kind: "ConfigMap",
+          metadata: {
+            name: mapToPruneKey,
+            annotations: { ...labels },
+            labels: { ...labels },
+          },
+          data: {},
+        }
+
+        await apply({ log, ctx, api, provider, manifests: [configMapToPrune], namespace })
+
+        // Here, we create via the k8s API (not `kubetl apply`), so that unlike `configMapToPrune`, it won't acquire
+        // the "last applied" annotation. This means that it should *not* be pruned when we deploy the service, even
+        // though it has the service's label.
+        await api.core.createNamespacedConfigMap(namespace, {
+          apiVersion: "v1",
+          kind: "ConfigMap",
+          metadata: {
+            name: mapToNotPruneKey,
+            annotations: { ...labels },
+            labels: { ...labels },
+          },
+          data: {},
+        })
+
+        const deployTask = new DeployTask({
+          garden,
+          graph,
+          log,
+          service,
+          force: true,
+          forceBuild: false,
+          devModeServiceNames: [],
+          hotReloadServiceNames: [],
+          localModeServiceNames: [],
+        })
+
+        await garden.processTasks([deployTask], { throwOnError: true })
+
+        // We expect this `ConfigMap` to still exist.
+        await api.core.readNamespacedConfigMap(mapToNotPruneKey, namespace)
+
+        // ...and we expect this `ConfigMap` to have been deleted.
+        await expectError(
+          () => api.core.readNamespacedConfigMap(mapToPruneKey, namespace),
+          (err) => {
+            expect(stripAnsi(err.message)).to.match(
+              /Got error from Kubernetes API \(readNamespacedConfigMap\) - configmaps "should-be-pruned" not found/
+            )
+          }
+        )
+
+        await api.core.deleteNamespacedConfigMap(mapToNotPruneKey, namespace)
+      })
+
+      it("should ignore empty env vars in status check comparison", async () => {
+        const service: ContainerService = graph.getService("simple-service")
+        service.spec.env = {
+          FOO: "banana",
+          BAR: "",
+          BAZ: null,
+        }
+
+        const deployTask = new DeployTask({
+          garden,
+          graph,
+          log: garden.log,
+          service,
+          force: true,
+          forceBuild: false,
+          devModeServiceNames: [],
+          hotReloadServiceNames: [],
+          localModeServiceNames: [],
+        })
+
+        const results = await garden.processTasks([deployTask], { throwOnError: true })
+        const statuses = getServiceStatuses(results)
+        const status = statuses[service.name]
+        expect(status.state).to.eql("ready")
+      })
+
       it("should deploy a service referencing a volume module", async () => {
         const service = graph.getService("volume-reference")
 
@@ -522,6 +874,7 @@ describe("kubernetes container deployment handlers", () => {
           forceBuild: false,
           devModeServiceNames: [],
           hotReloadServiceNames: [],
+          localModeServiceNames: [],
         })
 
         const results = await garden.processTasks([deployTask], { throwOnError: true })
@@ -536,69 +889,6 @@ describe("kubernetes container deployment handlers", () => {
         expect(resources.Deployment.spec.template.spec.containers[0].volumeMounts).to.eql([
           { name: "test", mountPath: "/volume" },
         ])
-      })
-
-      it("should deploy a service in dev mode and successfully set up the sync", async () => {
-        const service = graph.getService("dev-mode")
-        const module = service.module
-        const log = garden.log
-        const deployTask = new DeployTask({
-          garden,
-          graph,
-          log,
-          service,
-          force: true,
-          forceBuild: false,
-          devModeServiceNames: [service.name],
-          hotReloadServiceNames: [],
-        })
-
-        await garden.processTasks([deployTask], { throwOnError: true })
-        const status = await getContainerServiceStatus({
-          ctx,
-          module,
-          service,
-          runtimeContext: emptyRuntimeContext,
-          log,
-          devMode: true,
-          hotReload: false,
-        })
-
-        // First, we create a file locally and verify that it gets synced into the pod
-        await writeFile(join(module.path, "made_locally"), "foo")
-        await sleep(300)
-        const execRes = await execInWorkload({
-          command: ["/bin/sh", "-c", "cat /tmp/made_locally"],
-          ctx,
-          provider,
-          log,
-          namespace: provider.config.namespace!.name!,
-          workload: status.detail.workload!,
-          interactive: false,
-        })
-        expect(execRes.output.trim()).to.eql("foo")
-
-        // Then, we create a file in the pod and verify that it gets synced back
-        await execInWorkload({
-          command: ["/bin/sh", "-c", "echo bar > /tmp/made_in_pod"],
-          ctx,
-          provider,
-          log,
-          namespace: provider.config.namespace!.name!,
-          workload: status.detail.workload!,
-          interactive: false,
-        })
-        await sleep(300)
-        const localPath = join(module.path, "made_in_pod")
-        expect(await pathExists(localPath)).to.eql(true)
-        expect((await readFile(localPath)).toString().trim()).to.eql("bar")
-
-        // Clean up the files we created locally
-        for (const filename of ["made_locally", "made_in_pod"]) {
-          try {
-            await remove(join(module.path, filename))
-          } catch {}
-        }
       })
     })
 
@@ -619,6 +909,7 @@ describe("kubernetes container deployment handlers", () => {
           forceBuild: false,
           devModeServiceNames: [],
           hotReloadServiceNames: [],
+          localModeServiceNames: [],
         })
 
         const results = await garden.processTasks([deployTask], { throwOnError: true })
@@ -642,6 +933,7 @@ describe("kubernetes container deployment handlers", () => {
           forceBuild: false,
           devModeServiceNames: [],
           hotReloadServiceNames: [],
+          localModeServiceNames: [],
         })
 
         const results = await garden.processTasks([deployTask], { throwOnError: true })
@@ -676,6 +968,7 @@ describe("kubernetes container deployment handlers", () => {
           forceBuild: false,
           devModeServiceNames: [],
           hotReloadServiceNames: [],
+          localModeServiceNames: [],
         })
 
         const results = await garden.processTasks([deployTask], { throwOnError: true })
@@ -705,6 +998,7 @@ describe("kubernetes container deployment handlers", () => {
           forceBuild: false,
           devModeServiceNames: [],
           hotReloadServiceNames: [],
+          localModeServiceNames: [],
         })
 
         const results = await garden.processTasks([deployTask], { throwOnError: true })
@@ -734,6 +1028,7 @@ describe("kubernetes container deployment handlers", () => {
           forceBuild: false,
           devModeServiceNames: [],
           hotReloadServiceNames: [],
+          localModeServiceNames: [],
         })
 
         const results = await garden.processTasks([deployTask], { throwOnError: true })

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -15,7 +15,7 @@ import { KubeApi } from "../api"
 import { getAppNamespace } from "../namespace"
 import Bluebird from "bluebird"
 import { KubernetesResource, KubernetesServerResource, BaseResource } from "../types"
-import { zip, isArray, isPlainObject, pickBy, mapValues, flatten, cloneDeep } from "lodash"
+import { zip, isArray, isPlainObject, pickBy, mapValues, flatten, cloneDeep, omit } from "lodash"
 import { KubernetesProvider, KubernetesPluginContext } from "../config"
 import { isSubset } from "../../../util/is-subset"
 import { LogEntry } from "../../../logger/log-entry"
@@ -25,12 +25,14 @@ import {
   V1Pod,
   V1PersistentVolumeClaim,
   V1Service,
+  V1Container,
 } from "@kubernetes/client-node"
 import dedent = require("dedent")
 import { getPods, hashManifest } from "../util"
 import { checkWorkloadStatus } from "./workload"
 import { checkWorkloadPodStatus } from "./pod"
 import { deline, gardenAnnotationKey, stableStringify } from "../../../util/string"
+import { SyncableResource } from "../hot-reload/hot-reload"
 
 export interface ResourceStatus<T = BaseResource> {
   state: ServiceState
@@ -195,6 +197,13 @@ export async function waitForResources({
   })
   emitLog(waitingMsg)
 
+  if (resources.length === 0) {
+    const noResourcesMsg = `No resources to wait`
+    emitLog(noResourcesMsg)
+    statusLine.setState({ symbol: "info", section: serviceName, msg: noResourcesMsg })
+    return []
+  }
+
   const api = await KubeApi.factory(log, ctx, provider)
   let statuses: ResourceStatus[]
 
@@ -266,6 +275,9 @@ export async function waitForResources({
 interface ComparisonResult {
   state: ServiceState
   remoteResources: KubernetesResource[]
+  deployedWithDevMode: boolean
+  deployedWithHotReloading: boolean
+  deployedWithLocalMode: boolean
 }
 
 /**
@@ -290,6 +302,9 @@ export async function compareDeployedResources(
   const result: ComparisonResult = {
     state: "unknown",
     remoteResources: <KubernetesResource[]>deployedResources.filter((o) => o !== null),
+    deployedWithDevMode: false,
+    deployedWithHotReloading: false,
+    deployedWithLocalMode: false,
   }
 
   const logDescription = (resource: KubernetesResource) => `${resource.kind}/${resource.metadata.name}`
@@ -349,6 +364,18 @@ export async function compareDeployedResources(
       delete manifest.metadata.annotations[gardenAnnotationKey("manifest-hash")]
     }
 
+    if (manifest.kind === "DaemonSet" || manifest.kind === "Deployment" || manifest.kind === "StatefulSet") {
+      if (isConfiguredForDevMode(<SyncableResource>manifest)) {
+        result.deployedWithDevMode = true
+      }
+      if (isConfiguredForHotReloading(<SyncableResource>manifest)) {
+        result.deployedWithHotReloading = true
+      }
+      if (isConfiguredForLocalMode(<SyncableResource>manifest)) {
+        result.deployedWithLocalMode = true
+      }
+    }
+
     // Start by checking for "last applied configuration" annotations and comparing against those.
     // This can be more accurate than comparing against resolved resources.
     if (deployedResource.metadata && deployedResource.metadata.annotations) {
@@ -390,6 +417,9 @@ export async function compareDeployedResources(
     // NOTE: this approach won't fly in the long run, but hopefully we can climb out of this mess when
     //       `kubectl diff` is ready, or server-side apply/diff is ready
     if (manifest.kind === "DaemonSet" || manifest.kind === "Deployment" || manifest.kind === "StatefulSet") {
+      // NOTE: this approach won't fly in the long run, but hopefully we can climb out of this mess when
+      //       `kubectl diff` is ready, or server-side apply/diff is ready
+
       // handle properties that are omitted in the response because they have the default value
       // (another design issue in the K8s API)
       if (manifest.spec.minReadySeconds === 0) {
@@ -402,6 +432,11 @@ export async function compareDeployedResources(
 
     // clean null values
     manifest = <KubernetesResource>removeNull(manifest)
+    // The Kubernetes API currently strips out environment variables values so we remove them
+    // from the manifests as well
+    manifest = removeEmptyEnvValues(manifest)
+    // ...and from the deployedResource for good measure, in case the K8s API changes.
+    deployedResource = removeEmptyEnvValues(deployedResource)
 
     if (!isSubset(deployedResource, manifest)) {
       if (manifest) {
@@ -421,6 +456,18 @@ export async function compareDeployedResources(
 
   result.state = "ready"
   return result
+}
+
+export function isConfiguredForDevMode(resource: SyncableResource): boolean {
+  return resource.metadata.annotations?.[gardenAnnotationKey("dev-mode")] === "true"
+}
+
+export function isConfiguredForHotReloading(resource: SyncableResource): boolean {
+  return resource.metadata.annotations?.[gardenAnnotationKey("hot-reload")] === "true"
+}
+
+export function isConfiguredForLocalMode(resource: SyncableResource): boolean {
+  return resource.metadata.annotations?.[gardenAnnotationKey("local-mode")] === "true"
 }
 
 export async function getDeployedResource(
@@ -458,4 +505,29 @@ function removeNull<T>(value: T | Iterable<T>): T | Iterable<T> | { [K in keyof 
   } else {
     return value
   }
+}
+
+/**
+ * Normalize Kubernetes container specs by removing empty environment variable values. We need
+ * this because the Kubernetes API strips out these empty values.
+ *
+ * That is, something like { "name": FOO, "value": "" } becomes { "name": FOO } when
+ * we read the deployed resource from the K8s API.
+ *
+ * Calling this function ensures a given manifest will look the same as actual deployed resource.
+ */
+function removeEmptyEnvValues(resource: KubernetesResource): KubernetesResource {
+  if (resource.spec?.template?.spec?.containers && resource.spec.template.spec.containers.length > 0) {
+    const containerSpecs = resource.spec.template.spec.containers.map((container: V1Container) => {
+      const env = container.env?.map((envKvPair) => {
+        return envKvPair.value === "" ? omit(envKvPair, "value") : envKvPair
+      })
+      if (env) {
+        container["env"] = env
+      }
+      return container
+    })
+    resource.spec.template.spec["containers"] = containerSpecs
+  }
+  return resource
 }

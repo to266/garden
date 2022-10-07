@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -11,6 +11,7 @@
 import { IncomingMessage } from "http"
 import { Agent } from "https"
 import { ReadStream } from "tty"
+import Bluebird from "bluebird"
 import chalk from "chalk"
 import httpStatusCodes from "http-status-codes"
 import {
@@ -43,7 +44,7 @@ import { readFile } from "fs-extra"
 import { lookup } from "dns-lookup-cache"
 
 import { Omit, safeDumpYaml, StringCollector, sleep } from "../../util/util"
-import { omitBy, isObject, isPlainObject, keyBy } from "lodash"
+import { omitBy, isObject, isPlainObject, keyBy, flatten } from "lodash"
 import { GardenBaseError, RuntimeError, ConfigurationError } from "../../exceptions"
 import {
   KubernetesResource,
@@ -342,7 +343,7 @@ export class KubeApi {
         log.silly(`${requestOpts.method.toUpperCase()} ${url}`)
         return await request(requestOpts)
       } catch (err) {
-        throw handleRequestPromiseError(err)
+        throw handleRequestPromiseError(path, err)
       }
     })
   }
@@ -433,6 +434,44 @@ export class KubeApi {
     }))
 
     return list
+  }
+
+  /**
+   * Fetches all resources in the namespace matching the provided API version + kind pairs, optionally filtered by
+   * `labelSelector`.
+   *
+   * Useful when resources of several kinds need to be fetched at once.
+   */
+  async listResourcesForKinds({
+    log,
+    namespace,
+    versionedKinds,
+    labelSelector,
+  }: {
+    log: LogEntry
+    namespace: string
+    versionedKinds: { apiVersion: string; kind: string }[]
+    labelSelector?: { [label: string]: string }
+  }): Promise<KubernetesResource[]> {
+    const resources = await Bluebird.map(versionedKinds, async ({ apiVersion, kind }) => {
+      try {
+        const resourceListForKind = await this.listResources({
+          log,
+          apiVersion,
+          kind,
+          namespace,
+          labelSelector,
+        })
+        return resourceListForKind.items
+      } catch (err) {
+        if (err.statusCode === 404) {
+          // Then this resource version + kind is not available in the cluster.
+          return []
+        }
+        throw err
+      }
+    })
+    return flatten(resources)
   }
 
   async replace({
@@ -648,7 +687,7 @@ export class KubeApi {
                   })
                   // the API errors are not properly formed Error objects
                   .catch((err: Error) => {
-                    throw wrapError(err)
+                    throw wrapError(name, err)
                   })
               )
             }
@@ -856,19 +895,23 @@ async function getContextConfig(log: LogEntry, ctx: PluginContext, provider: Kub
   const kc = new KubeConfig()
 
   // There doesn't appear to be a method to just load the parsed config :/
-  kc.loadFromString(safeDumpYaml(rawConfig))
-  kc.setCurrentContext(context)
+  try {
+    kc.loadFromString(safeDumpYaml(rawConfig))
+    kc.setCurrentContext(context)
+  } catch (err) {
+    throw new Error("Could not parse kubeconfig, " + err)
+  }
 
   cachedConfigs[cacheKey] = kc
 
   return kc
 }
 
-function wrapError(err: any) {
+function wrapError(name: string, err: any) {
   if (!err.message || err.name === "HttpError") {
     const response = err.response || {}
     const body = response.body || err.body
-    const wrapped = new KubernetesError(`Got error from Kubernetes API - ${body.message}`, {
+    const wrapped = new KubernetesError(`Got error from Kubernetes API (${name}) - ${body.message}`, {
       body,
       request: omitBy(response.request, (v, k) => isObject(v) || k[0] === "_"),
     })
@@ -879,16 +922,16 @@ function wrapError(err: any) {
   }
 }
 
-function handleRequestPromiseError(err: Error) {
+function handleRequestPromiseError(name: string, err: Error) {
   if (err instanceof requestErrors.StatusCodeError) {
-    const wrapped = new KubernetesError(`StatusCodeError from Kubernetes API - ${err.message}`, {
+    const wrapped = new KubernetesError(`StatusCodeError from Kubernetes API (${name}) - ${err.message}`, {
       body: err.error,
     })
     wrapped.statusCode = err.statusCode
 
     return wrapped
   } else {
-    return wrapError(err)
+    return wrapError(name, err)
   }
 }
 

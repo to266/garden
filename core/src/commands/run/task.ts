@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -55,7 +55,6 @@ export class RunTaskCommand extends Command<Args, Opts> {
   alias = "t"
   help = "Run a task (in the context of its parent module)."
 
-  workflows = true
   streamEvents = true
 
   description = dedent`
@@ -80,14 +79,8 @@ export class RunTaskCommand extends Command<Args, Opts> {
     printHeader(headerLog, msg, "runner")
   }
 
-  async action({
-    garden,
-    isWorkflowStepCommand,
-    log,
-    args,
-    opts,
-  }: CommandParams<Args, Opts>): Promise<CommandResult<RunTaskOutput>> {
-    const graph = await garden.getConfigGraph({ log, emit: !isWorkflowStepCommand })
+  async action({ garden, log, args, opts }: CommandParams<Args, Opts>): Promise<CommandResult<RunTaskOutput>> {
+    const graph = await garden.getConfigGraph({ log, emit: true })
     const task = graph.getTask(args.task, true)
 
     if (task.disabled && !opts.force) {
@@ -110,8 +103,9 @@ export class RunTaskCommand extends Command<Args, Opts> {
       forceBuild: opts["force-build"],
       devModeServiceNames: [],
       hotReloadServiceNames: [],
+      localModeServiceNames: [],
     })
-    const graphResults = await garden.processTasks([taskTask])
+    const graphResults = await garden.processTasks([taskTask], { throwOnError: true })
 
     return handleTaskResult({ log, actionDescription: "task", graphResults, key: taskTask.getKey() })
   }

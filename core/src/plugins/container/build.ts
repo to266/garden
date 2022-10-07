@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -54,7 +54,7 @@ export async function buildContainerModule({ ctx, module, log }: BuildModulePara
     )
   }
 
-  const identifier = containerHelpers.getLocalImageId(module, module.version)
+  const identifier = module.outputs["local-image-id"]
 
   // build doesn't exist, so we create it
   log.setState(`Building ${identifier}...`)

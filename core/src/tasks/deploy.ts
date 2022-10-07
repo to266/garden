@@ -1,27 +1,25 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import Bluebird from "bluebird"
 import chalk from "chalk"
 import { includes } from "lodash"
 import { LogEntry } from "../logger/log-entry"
 import { BaseTask, TaskType, getServiceStatuses, getRunTaskResults } from "./base"
 import { GardenService, ServiceStatus, getLinkUrl } from "../types/service"
 import { Garden } from "../garden"
-import { TaskTask } from "./task"
 import { BuildTask } from "./build"
 import { ConfigGraph } from "../config-graph"
 import { startPortProxies } from "../proxy"
 import { GraphResults } from "../task-graph"
 import { prepareRuntimeContext } from "../runtime-context"
 import { GetServiceStatusTask } from "./get-service-status"
-import { GetTaskResultTask } from "./get-task-result"
 import { Profile } from "../util/profiling"
+import { getServiceStatusDeps, getTaskResultDeps, getDeployDeps, getTaskDeps } from "./helpers"
 
 export interface DeployTaskParams {
   garden: Garden
@@ -31,21 +29,24 @@ export interface DeployTaskParams {
   forceBuild: boolean
   fromWatch?: boolean
   log: LogEntry
+  skipRuntimeDependencies?: boolean
   devModeServiceNames: string[]
   hotReloadServiceNames: string[]
+  localModeServiceNames: string[]
 }
 
 @Profile()
 export class DeployTask extends BaseTask {
   type: TaskType = "deploy"
   concurrencyLimit = 10
-
-  private graph: ConfigGraph
-  private service: GardenService
-  private forceBuild: boolean
-  private fromWatch: boolean
-  private devModeServiceNames: string[]
-  private hotReloadServiceNames: string[]
+  graph: ConfigGraph
+  service: GardenService
+  forceBuild: boolean
+  fromWatch: boolean
+  skipRuntimeDependencies: boolean
+  devModeServiceNames: string[]
+  hotReloadServiceNames: string[]
+  localModeServiceNames: string[]
 
   constructor({
     garden,
@@ -55,29 +56,33 @@ export class DeployTask extends BaseTask {
     force,
     forceBuild,
     fromWatch = false,
+    skipRuntimeDependencies = false,
     devModeServiceNames,
     hotReloadServiceNames,
+    localModeServiceNames,
   }: DeployTaskParams) {
     super({ garden, log, force, version: service.version })
     this.graph = graph
     this.service = service
     this.forceBuild = forceBuild
     this.fromWatch = fromWatch
+    this.skipRuntimeDependencies = skipRuntimeDependencies
     this.devModeServiceNames = devModeServiceNames
     this.hotReloadServiceNames = hotReloadServiceNames
+    this.localModeServiceNames = localModeServiceNames
   }
 
   async resolveDependencies() {
     const dg = this.graph
 
-    const skipServiceDeps = [...this.hotReloadServiceNames]
+    const skippedServiceDepNames = [...this.hotReloadServiceNames]
 
-    // We filter out service dependencies on services configured for hot reloading or dev mode (if any)
+    // We filter out service dependencies on services configured for hot reloading (if any)
     const deps = dg.getDependencies({
       nodeType: "deploy",
       name: this.getName(),
       recursive: false,
-      filter: (depNode) => !(depNode.type === "deploy" && includes(skipServiceDeps, depNode.name)),
+      filter: (depNode) => !(depNode.type === "deploy" && includes(skippedServiceDepNames, depNode.name)),
     })
 
     const statusTask = new GetServiceStatusTask({
@@ -88,71 +93,32 @@ export class DeployTask extends BaseTask {
       force: false,
       devModeServiceNames: this.devModeServiceNames,
       hotReloadServiceNames: this.hotReloadServiceNames,
+      localModeServiceNames: this.localModeServiceNames,
     })
 
-    if (this.fromWatch && includes(skipServiceDeps, this.service.name)) {
-      // Only need to get existing statuses and results when hot-reloading
-      const dependencyStatusTasks = deps.deploy.map((service) => {
-        return new GetServiceStatusTask({
-          garden: this.garden,
-          graph: this.graph,
-          log: this.log,
-          service,
-          force: false,
-          devModeServiceNames: this.devModeServiceNames,
-          hotReloadServiceNames: this.hotReloadServiceNames,
-        })
-      })
-
-      const taskResultTasks = await Bluebird.map(deps.run, async (task) => {
-        return new GetTaskResultTask({
-          garden: this.garden,
-          graph: this.graph,
-          log: this.log,
-          task,
-          force: false,
-        })
-      })
-
-      return [statusTask, ...dependencyStatusTasks, ...taskResultTasks]
+    if (this.fromWatch && includes(skippedServiceDepNames, this.service.name)) {
+      // Only need to get existing statuses and results when using hot-reloading
+      return [statusTask, ...getServiceStatusDeps(this, deps), ...getTaskResultDeps(this, deps)]
     } else {
-      const deployTasks = deps.deploy.map((service) => {
-        return new DeployTask({
-          garden: this.garden,
-          graph: this.graph,
-          log: this.log,
-          service,
-          force: false,
-          forceBuild: this.forceBuild,
-          fromWatch: this.fromWatch,
-          devModeServiceNames: this.devModeServiceNames,
-          hotReloadServiceNames: this.hotReloadServiceNames,
-        })
-      })
-
-      const taskTasks = await Bluebird.map(deps.run, (task) => {
-        return new TaskTask({
-          task,
-          garden: this.garden,
-          log: this.log,
-          graph: this.graph,
-          force: false,
-          forceBuild: this.forceBuild,
-          devModeServiceNames: this.devModeServiceNames,
-          hotReloadServiceNames: this.hotReloadServiceNames,
-        })
-      })
-
-      const buildTasks = await BuildTask.factory({
-        garden: this.garden,
-        graph: this.graph,
-        log: this.log,
-        module: this.service.module,
-        force: this.forceBuild,
-      })
-
-      return [statusTask, ...deployTasks, ...taskTasks, ...buildTasks]
+      const buildTasks = await this.getBuildTasks()
+      if (this.skipRuntimeDependencies) {
+        // Then we don't deploy any service dependencies or run any task dependencies, but only get existing
+        // statuses and results.
+        return [statusTask, ...buildTasks, ...getServiceStatusDeps(this, deps), ...getTaskResultDeps(this, deps)]
+      } else {
+        return [statusTask, ...buildTasks, ...getDeployDeps(this, deps, false), ...getTaskDeps(this, deps, false)]
+      }
     }
+  }
+
+  private async getBuildTasks(): Promise<BaseTask[]> {
+    return BuildTask.factory({
+      garden: this.garden,
+      graph: this.graph,
+      log: this.log,
+      module: this.service.module,
+      force: this.forceBuild,
+    })
   }
 
   getName() {
@@ -168,6 +134,7 @@ export class DeployTask extends BaseTask {
 
     const devMode = includes(this.devModeServiceNames, this.service.name)
     const hotReload = !devMode && includes(this.hotReloadServiceNames, this.service.name)
+    const localMode = includes(this.localModeServiceNames, this.service.name)
 
     const dependencies = this.graph.getDependencies({
       nodeType: "deploy",
@@ -178,7 +145,7 @@ export class DeployTask extends BaseTask {
     const serviceStatuses = getServiceStatuses(dependencyResults)
     const taskResults = getRunTaskResults(dependencyResults)
 
-    // TODO: attach runtimeContext to GetServiceTask output
+    // TODO: attach runtimeContext to GetServiceStatusTask output
     const runtimeContext = await prepareRuntimeContext({
       garden: this.garden,
       graph: this.graph,
@@ -192,6 +159,8 @@ export class DeployTask extends BaseTask {
     const actions = await this.garden.getActionRouter()
 
     let status = serviceStatuses[this.service.name]
+    const devModeSkipRedeploy = status.devMode && (devMode || hotReload)
+    const localModeSkipRedeploy = status.localMode && localMode
 
     const log = this.log.info({
       status: "active",
@@ -199,7 +168,11 @@ export class DeployTask extends BaseTask {
       msg: `Deploying version ${version}...`,
     })
 
-    if (!this.force && version === status.version && status.state === "ready") {
+    if (
+      !this.force &&
+      status.state === "ready" &&
+      (version === status.version || devModeSkipRedeploy || localModeSkipRedeploy)
+    ) {
       // already deployed and ready
       log.setSuccess({
         msg: chalk.green("Already deployed"),
@@ -215,6 +188,7 @@ export class DeployTask extends BaseTask {
           force: this.force,
           devMode,
           hotReload,
+          localMode,
         })
       } catch (err) {
         log.setError()

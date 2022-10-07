@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -95,4 +95,12 @@ export function getTextWidth(text: string, font: string) {
   context.font = font
   const metrics = context.measureText(text)
   return metrics.width
+}
+
+/**
+ * Returns the auth key from the current page's URL params.
+ */
+export function getAuthKey() {
+  const urlParams = new URLSearchParams(window.location.search)
+  return urlParams.get("key")
 }

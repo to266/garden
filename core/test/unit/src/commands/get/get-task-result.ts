@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -15,12 +15,12 @@ import {
   testModuleSpecSchema,
   cleanProject,
   TestGarden,
+  makeTestGarden,
 } from "../../../../helpers"
 import { GetTaskResultCommand } from "../../../../../src/commands/get/get-task-result"
 import { expect } from "chai"
 import { createGardenPlugin } from "../../../../../src/types/plugin/plugin"
 import { LogEntry } from "../../../../../src/logger/log-entry"
-import { Garden } from "../../../../../src/garden"
 import { GetTaskResultParams } from "../../../../../src/types/plugin/task/getTaskResult"
 import { getArtifactKey } from "../../../../../src/util/artifacts"
 import { writeFile } from "fs-extra"
@@ -60,13 +60,13 @@ const testPlugin = createGardenPlugin({
 })
 
 describe("GetTaskResultCommand", () => {
-  let garden: Garden
+  let garden: TestGarden
   let log: LogEntry
   const projectRootB = join(dataDir, "test-project-b")
   const command = new GetTaskResultCommand()
 
   beforeEach(async () => {
-    garden = await TestGarden.factory(projectRootB, { plugins: [testPlugin] })
+    garden = await makeTestGarden(projectRootB, { plugins: [testPlugin], noCache: true })
     log = garden.log
   })
 

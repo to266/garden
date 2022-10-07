@@ -5,6 +5,7 @@
     "test/**/*.ts"
   ],
   "compilerOptions": {
+    "composite": true,
     "outDir": "build"
   },
   "references": [
@@ -19,6 +20,18 @@
     },
     {
       "path": "../plugins/conftest-kubernetes"
+    },
+    {
+      "path": "../plugins/jib"
+    },
+    {
+      "path": "../plugins/maven-container"
+    },
+    {
+      "path": "../plugins/terraform"
+    },
+    {
+      "path": "../plugins/pulumi"
     }
   ]
 }

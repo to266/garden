@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,15 +7,7 @@
  */
 
 import { exec, getPlatform, getArchitecture } from "../../../../src/util/util"
-import {
-  makeTempDir,
-  TempDirectory,
-  TestGarden,
-  withDefaultGlobalOpts,
-  dataDir,
-  getLogMessages,
-  expectError,
-} from "../../../helpers"
+import { makeTempDir, TempDirectory, TestGarden, withDefaultGlobalOpts, dataDir, expectError } from "../../../helpers"
 import { expect } from "chai"
 import { DEFAULT_API_VERSION } from "../../../../src/constants"
 import { createGardenPlugin } from "../../../../src/types/plugin/plugin"
@@ -26,6 +18,7 @@ import { dedent } from "../../../../src/util/string"
 import { LogEntry } from "../../../../src/logger/log-entry"
 import { makeDummyGarden } from "../../../../src/cli/cli"
 import { defaultNamespace } from "../../../../src/config/project"
+import { getLogMessages } from "../../../../src/util/testing"
 
 describe("ToolsCommand", () => {
   let tmpDir: TempDirectory
@@ -92,7 +85,7 @@ describe("ToolsCommand", () => {
 
   before(async () => {
     tmpDir = await makeTempDir()
-    await exec("git", ["init"], { cwd: tmpDir.path })
+    await exec("git", ["init", "--initial-branch=main"], { cwd: tmpDir.path })
 
     garden = await TestGarden.factory(tmpDir.path, {
       plugins: [pluginA, pluginB],
@@ -176,7 +169,7 @@ describe("ToolsCommand", () => {
       log,
       headerLog: log,
       footerLog: log,
-      args: { tool: "tool", _: ["0"] },
+      args: { "tool": "tool", "--": ["0"] },
       opts: withDefaultGlobalOpts({ "get-path": false, "output": "json" }),
     })
 
@@ -193,7 +186,7 @@ describe("ToolsCommand", () => {
           log,
           headerLog: log,
           footerLog: log,
-          args: { tool: "51616ok3xnnz....361.2362&123", _: ["0"] },
+          args: { "tool": "51616ok3xnnz....361.2362&123", "--": ["0"] },
           opts: withDefaultGlobalOpts({ "get-path": false, "output": "json" }),
         }),
       (err) =>
@@ -211,7 +204,7 @@ describe("ToolsCommand", () => {
           log,
           headerLog: log,
           footerLog: log,
-          args: { tool: "bla.tool", _: ["0"] },
+          args: { "tool": "bla.tool", "--": ["0"] },
           opts: withDefaultGlobalOpts({ "get-path": false, "output": "json" }),
         }),
       (err) => expect(err.message).to.equal("Could not find plugin bla.")
@@ -226,7 +219,7 @@ describe("ToolsCommand", () => {
           log,
           headerLog: log,
           footerLog: log,
-          args: { tool: "bla", _: ["0"] },
+          args: { "tool": "bla", "--": ["0"] },
           opts: withDefaultGlobalOpts({ "get-path": false, "output": "json" }),
         }),
       (err) => expect(err.message).to.equal("Could not find tool bla.")
@@ -245,7 +238,7 @@ describe("ToolsCommand", () => {
       log,
       headerLog: log,
       footerLog: log,
-      args: { tool: "tool", _: ["0"] },
+      args: { "tool": "tool", "--": ["0"] },
       opts: withDefaultGlobalOpts({ "get-path": false, "output": "json" }),
     })
 
@@ -260,7 +253,7 @@ describe("ToolsCommand", () => {
       log,
       headerLog: log,
       footerLog: log,
-      args: { tool: "test-b.tool", _: ["0"] },
+      args: { "tool": "test-b.tool", "--": ["0"] },
       opts: withDefaultGlobalOpts({ "get-path": false, "output": "json" }),
     })
 
@@ -307,7 +300,7 @@ describe("ToolsCommand", () => {
       log,
       headerLog: log,
       footerLog: log,
-      args: { tool: "tool", _: ["1"] },
+      args: { "tool": "tool", "--": ["1"] },
       opts: withDefaultGlobalOpts({ "get-path": false, "output": "json" }),
     })
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,7 +9,7 @@
 import { Command, CommandParams } from "../base"
 import dedent from "dedent"
 import { StringParameter } from "../../cli/params"
-import { Warning } from "../../db/entities/warning"
+import { hideWarning } from "../../warnings"
 
 const hideWarningArgs = {
   key: new StringParameter({
@@ -36,8 +36,7 @@ export class HideWarningCommand extends Command<Args, {}> {
   printHeader() {}
 
   async action({ args }: CommandParams<Args, {}>) {
-    await Warning.hide(args.key)
-
+    await hideWarning(args.key)
     return {}
   }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -32,8 +32,7 @@ import { freezeTime } from "../../../helpers"
 const logger: Logger = getLogger()
 
 beforeEach(() => {
-  // tslint:disable-next-line: prettier
-  (logger["children"] as any) = []
+  logger["children"] = []
 })
 
 describe("renderers", () => {
@@ -253,8 +252,10 @@ describe("renderers", () => {
       })
       expect(formatForJson(entry)).to.eql({
         msg: "hello",
+        level: "info",
         timestamp: now.toISOString(),
         section: "c",
+        allSections: ["c"],
         data: { foo: "bar" },
         metadata: { task: taskMetadata },
       })
@@ -267,8 +268,10 @@ describe("renderers", () => {
       entry.setState({ msg: "world", append: true })
       expect(formatForJson(entry)).to.eql({
         msg: "hello - world",
+        level: "info",
         timestamp: now.toISOString(),
         section: "",
+        allSections: [],
         data: undefined,
         metadata: undefined,
       })
@@ -278,7 +281,9 @@ describe("renderers", () => {
       const entry = logger.placeholder()
       expect(formatForJson(entry)).to.eql({
         msg: "",
+        level: "info",
         section: "",
+        allSections: [],
         data: undefined,
         metadata: undefined,
         timestamp: now.toISOString(),

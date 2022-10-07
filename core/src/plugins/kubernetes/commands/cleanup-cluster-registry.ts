@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -19,13 +19,13 @@ import { queryRegistry } from "../container/util"
 import { splitFirst, splitLast } from "../../../util/util"
 import { LogEntry } from "../../../logger/log-entry"
 import Bluebird from "bluebird"
-import { CLUSTER_REGISTRY_DEPLOYMENT_NAME, inClusterRegistryHostname, dockerDaemonContainerName } from "../constants"
+import { CLUSTER_REGISTRY_DEPLOYMENT_NAME, dockerDaemonContainerName } from "../constants"
 import { PluginError } from "../../../exceptions"
 import { apply } from "../kubectl"
 import { waitForResources } from "../status/status"
 import { dedent, deline } from "../../../util/string"
 import { sharedBuildSyncDeploymentName } from "../container/build/common"
-import { execInWorkload, getRunningDeploymentPod } from "../util"
+import { execInWorkload, getRunningDeploymentPod, usingInClusterRegistry } from "../util"
 import { getSystemNamespace } from "../namespace"
 import { PluginContext } from "../../../plugin-context"
 import { PodRunner } from "../run"
@@ -59,7 +59,7 @@ export const cleanupClusterRegistry: PluginCommand = {
     const imagesInUse = await getImagesInUse(api, provider, log)
 
     // Get images in registry
-    if (provider.config.deploymentRegistry?.hostname === inClusterRegistryHostname) {
+    if (usingInClusterRegistry(provider)) {
       try {
         const images = await getImagesInRegistry(k8sCtx, log)
 
@@ -255,6 +255,7 @@ async function runRegistryGarbageCollection(ctx: KubernetesPluginContext, api: K
   try {
     await apply({
       ctx,
+      api,
       log,
       provider,
       manifests: [modifiedDeployment],
@@ -301,6 +302,7 @@ async function runRegistryGarbageCollection(ctx: KubernetesPluginContext, api: K
 
         await apply({
           ctx,
+          api,
           log,
           provider,
           manifests: [writableRegistry],

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,11 +7,7 @@
  */
 
 import { expect } from "chai"
-import {
-  StreamEvent,
-  LogEntryEventPayload,
-  BufferedEventStream,
-} from "../../../../src/enterprise/buffered-event-stream"
+import { StreamEvent, LogEntryEventPayload, BufferedEventStream } from "../../../../src/cloud/buffered-event-stream"
 import { getLogger } from "../../../../src/logger/logger"
 import { Garden } from "../../../../src/garden"
 import { makeTestGardenA } from "../../../helpers"

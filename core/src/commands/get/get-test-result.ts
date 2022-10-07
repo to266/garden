@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -38,7 +38,6 @@ export class GetTestResultCommand extends Command<Args> {
   name = "test-result"
   help = "Outputs the latest execution result of a provided test."
 
-  workflows = true
   streamEvents = true
 
   arguments = getTestResultArgs
@@ -61,16 +60,11 @@ export class GetTestResultCommand extends Command<Args> {
     )
   }
 
-  async action({
-    garden,
-    isWorkflowStepCommand,
-    log,
-    args,
-  }: CommandParams<Args>): Promise<CommandResult<GetTestResultCommandResult>> {
+  async action({ garden, log, args }: CommandParams<Args>): Promise<CommandResult<GetTestResultCommandResult>> {
     const testName = args.name
     const moduleName = args.module
 
-    const graph = await garden.getConfigGraph({ log, emit: !isWorkflowStepCommand })
+    const graph = await garden.getConfigGraph({ log, emit: true })
     const actions = await garden.getActionRouter()
 
     const module = graph.getModule(moduleName)

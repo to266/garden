@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,7 +9,7 @@
 import { join } from "path"
 import { ConfigurationError } from "../../exceptions"
 import { ServiceStatus, ServiceIngress, ServiceProtocol } from "../../types/service"
-import { testExecModule } from "../exec"
+import { testExecModule } from "../exec/exec"
 import { getNamespaceStatus } from "../kubernetes/namespace"
 import { findByName, sleep } from "../../util/util"
 import { KubeApi } from "../kubernetes/api"
@@ -24,7 +24,7 @@ import { GetServiceLogsParams } from "../../types/plugin/service/getServiceLogs"
 import { DeleteServiceParams } from "../../types/plugin/service/deleteService"
 import { HelmModuleConfig } from "../kubernetes/helm/config"
 import { DEFAULT_API_VERSION, STATIC_DIR } from "../../constants"
-import { ExecModuleConfig } from "../exec"
+import { ExecModuleConfig } from "../exec/exec"
 import { ConfigureProviderParams, ConfigureProviderResult } from "../../types/plugin/provider/configureProvider"
 import { KubernetesDeployment } from "../kubernetes/types"
 import {
@@ -47,20 +47,20 @@ import { LogEntry } from "../../logger/log-entry"
 import { ProviderMap } from "../../config/provider"
 import { parse } from "url"
 import { trim } from "lodash"
-import { getModuleTypeUrl, getGitHubUrl } from "../../docs/common"
+import { getGitHubUrl } from "../../docs/common"
 import { PluginContext } from "../../plugin-context"
 import { getK8sProvider } from "../kubernetes/util"
 import { KUBECTL_DEFAULT_TIMEOUT } from "../kubernetes/kubectl"
 
 const systemDir = join(STATIC_DIR, "openfaas", "system")
-const moduleTypeUrl = getModuleTypeUrl("openfaas")
+const moduleTypeUrl = "../module-types/openfaas.md"
 const gitHubUrl = getGitHubUrl("examples/openfaas")
 
 export const gardenPlugin = () =>
   createGardenPlugin({
     name: "openfaas",
     configSchema: configSchema(),
-    dependencies: ["kubernetes"],
+    dependencies: [{ name: "kubernetes" }],
     docs: dedent`
     This provider adds support for [OpenFaaS](https://www.openfaas.com/). It adds the [\`openfaas\` module type](${moduleTypeUrl}) and (by default) installs the \`faas-netes\` runtime to the project namespace. Each \`openfaas\` module maps to a single OpenFaaS function.
 
@@ -271,7 +271,7 @@ async function deployService(params: DeployServiceParams<OpenFaasModule>): Promi
 
   // write the stack file again with environment variables
   const envVars = { ...runtimeContext.envVars, ...module.spec.env }
-  await prepare(<OpenFaasProvider>ctx.provider, k8sProvider, module, envVars)
+  await prepare({ ctx, log, provider: <OpenFaasProvider>ctx.provider, k8sProvider, module, envVars })
 
   // use faas-cli to do the deployment
   const start = new Date().getTime()
@@ -338,12 +338,20 @@ async function deleteService(params: DeleteServiceParams<OpenFaasModule>): Promi
       module: service.module,
       devMode: false,
       hotReload: false,
+      localMode: false,
     })
 
     found = !!status.state
 
     const k8sProvider = getK8sProvider(ctx.provider.dependencies)
-    await prepare(<OpenFaasProvider>ctx.provider, k8sProvider, service.module, {})
+    await prepare({
+      ctx,
+      log,
+      provider: <OpenFaasProvider>ctx.provider,
+      k8sProvider,
+      module: service.module,
+      envVars: {},
+    })
 
     const module = service.module
 

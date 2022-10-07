@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -74,7 +74,7 @@ describe("plugins.container", () => {
   let containerProvider: ContainerProvider
 
   beforeEach(async () => {
-    garden = await makeTestGarden(projectRoot, { plugins: [gardenPlugin] })
+    garden = await makeTestGarden(projectRoot, { plugins: [gardenPlugin()] })
     log = garden.log
     containerProvider = await garden.resolveProvider(garden.log, "container")
     ctx = await garden.getPluginContext(containerProvider)
@@ -962,7 +962,8 @@ describe("plugins.container", () => {
 
       td.replace(helpers, "hasDockerfile", () => true)
       td.replace(helpers, "imageExistsLocally", async () => false)
-      td.replace(helpers, "getLocalImageId", () => "some/image")
+
+      module.outputs["local-image-id"] = "some/image"
 
       const cmdArgs = [
         "build",
@@ -997,7 +998,8 @@ describe("plugins.container", () => {
 
       td.replace(helpers, "hasDockerfile", () => true)
       td.replace(helpers, "imageExistsLocally", async () => false)
-      td.replace(helpers, "getLocalImageId", () => "some/image")
+
+      module.outputs["local-image-id"] = "some/image"
 
       const cmdArgs = [
         "build",
@@ -1035,7 +1037,8 @@ describe("plugins.container", () => {
       const module = td.object(await getTestModule(config))
 
       td.replace(helpers, "imageExistsLocally", async () => false)
-      td.replace(helpers, "getLocalImageId", () => "some/image")
+
+      module.outputs["local-image-id"] = "some/image"
 
       const cmdArgs = [
         "build",
@@ -1083,8 +1086,9 @@ describe("plugins.container", () => {
       const module = td.object(await getTestModule(config))
 
       td.replace(helpers, "hasDockerfile", () => true)
-      td.replace(helpers, "getLocalImageId", () => "some/image:12345")
       td.replace(helpers, "getPublicImageId", () => "some/image:12345")
+
+      module.outputs["local-image-id"] = "some/image:12345"
 
       td.replace(helpers, "dockerCli", async ({ cwd, args, ctx: _ctx }) => {
         expect(cwd).to.equal(module.buildPath)
@@ -1103,8 +1107,9 @@ describe("plugins.container", () => {
       const module = td.object(await getTestModule(config))
 
       td.replace(helpers, "hasDockerfile", () => true)
-      td.replace(helpers, "getLocalImageId", () => "some/image:12345")
       td.replace(helpers, "getPublicImageId", () => "some/image:1.1")
+
+      module.outputs["local-image-id"] = "some/image:12345"
 
       const dockerCli = td.replace(helpers, "dockerCli")
 
@@ -1136,7 +1141,8 @@ describe("plugins.container", () => {
       const module = td.object(await getTestModule(config))
 
       td.replace(helpers, "hasDockerfile", () => true)
-      td.replace(helpers, "getLocalImageId", () => "some/image:12345")
+
+      module.outputs["local-image-id"] = "some/image:12345"
 
       const dockerCli = td.replace(helpers, "dockerCli")
 

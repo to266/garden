@@ -50,7 +50,7 @@ files:
     # The file data as a string.
     data:
 
-    # The name of a Garden secret to copy the file data from (Garden Enterprise only).
+    # The name of a Garden secret to copy the file data from (Garden Cloud only).
     secretName:
 
 # The number of hours to keep the workflow pod running after completion.
@@ -84,37 +84,17 @@ steps:
     # <number of step> is the sequential number of the step (first step being number 1).
     #
     # This identifier is useful when referencing command outputs in following steps. For example, if you set this
-    # to "my-step", following steps can reference the \${steps.my-step.outputs.*} key in the `script` or `command`
+    # to "my-step", following steps can reference the ${steps.my-step.outputs.*} key in the `script` or `command`
     # fields.
     name:
 
     # A Garden command this step should run, followed by any required or optional arguments and flags.
-    # Arguments and options for the commands may be templated, including references to previous steps, but for now
-    # the commands themselves (as listed below) must be hard-coded.
     #
-    # Supported commands:
+    # Note that commands that are _persistent_—e.g. the dev command, commands with a watch flag set, the logs command
+    # with following enabled etc.—are not supported. In general, workflow steps should run to completion.
     #
-    # `[build]`
-    # `[delete, environment]`
-    # `[delete, service]`
-    # `[deploy]`
-    # `[exec]`
-    # `[get, config]`
-    # `[get, outputs]`
-    # `[get, status]`
-    # `[get, task-result]`
-    # `[get, test-result]`
-    # `[link, module]`
-    # `[link, source]`
-    # `[publish]`
-    # `[run, task]`
-    # `[run, test]`
-    # `[test]`
-    # `[update-remote, all]`
-    # `[update-remote, modules]`
-    # `[update-remote, sources]`
-    #
-    #
+    # Global options like --env, --log-level etc. are currently not supported for built-in commands, since they are
+    # handled before the individual steps are run.
     command:
 
     # A description of the workflow step.
@@ -153,7 +133,7 @@ steps:
     when: onSuccess
 
 # A list of triggers that determine when the workflow should be run, and which environment should be used (Garden
-# Enterprise only).
+# Cloud only).
 triggers:
   - # The environment name (from your project configuration) to use for the workflow when matched by this trigger.
     environment:
@@ -162,8 +142,9 @@ triggers:
     # this trigger's environment, as defined in your project's environment configs.
     namespace:
 
-    # A list of [GitHub events](https://docs.github.com/en/developers/webhooks-and-events/webhook-events-and-payloads)
-    # that should trigger this workflow.
+    # A list of [GitHub
+    # events](https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads) that
+    # should trigger this workflow.
     #
     # See the Garden Cloud documentation on [configuring
     # workflows](https://cloud.docs.garden.io/getting-started/workflows) for more details.
@@ -171,7 +152,7 @@ triggers:
     # Supported events:
     #
     # `pull-request`, `pull-request-closed`, `pull-request-merged`, `pull-request-opened`, `pull-request-reopened`,
-    # `pull-request-updated`
+    # `pull-request-updated`, `push`
     #
     #
     events:
@@ -286,7 +267,7 @@ The file data as a string.
 
 [files](#files) > secretName
 
-The name of a Garden secret to copy the file data from (Garden Enterprise only).
+The name of a Garden secret to copy the file data from (Garden Cloud only).
 
 | Type     | Required |
 | -------- | -------- |
@@ -408,7 +389,7 @@ An identifier to assign to this step. If none is specified, this defaults to "st
 <number of step> is the sequential number of the step (first step being number 1).
 
 This identifier is useful when referencing command outputs in following steps. For example, if you set this
-to "my-step", following steps can reference the \${steps.my-step.outputs.*} key in the `script` or `command`
+to "my-step", following steps can reference the ${steps.my-step.outputs.*} key in the `script` or `command`
 fields.
 
 | Type     | Required |
@@ -420,32 +401,10 @@ fields.
 [steps](#steps) > command
 
 A Garden command this step should run, followed by any required or optional arguments and flags.
-Arguments and options for the commands may be templated, including references to previous steps, but for now
-the commands themselves (as listed below) must be hard-coded.
 
-Supported commands:
+Note that commands that are _persistent_—e.g. the dev command, commands with a watch flag set, the logs command with following enabled etc.—are not supported. In general, workflow steps should run to completion.
 
-`[build]`
-`[delete, environment]`
-`[delete, service]`
-`[deploy]`
-`[exec]`
-`[get, config]`
-`[get, outputs]`
-`[get, status]`
-`[get, task-result]`
-`[get, test-result]`
-`[link, module]`
-`[link, source]`
-`[publish]`
-`[run, task]`
-`[run, test]`
-`[test]`
-`[update-remote, all]`
-`[update-remote, modules]`
-`[update-remote, sources]`
-
-
+Global options like --env, --log-level etc. are currently not supported for built-in commands, since they are handled before the individual steps are run.
 
 | Type            | Required |
 | --------------- | -------- |
@@ -539,7 +498,7 @@ and examples.
 
 ### `triggers[]`
 
-A list of triggers that determine when the workflow should be run, and which environment should be used (Garden Enterprise only).
+A list of triggers that determine when the workflow should be run, and which environment should be used (Garden Cloud only).
 
 | Type            | Required |
 | --------------- | -------- |
@@ -569,13 +528,13 @@ The namespace to use for the workflow when matched by this trigger. Follows the 
 
 [triggers](#triggers) > events
 
-A list of [GitHub events](https://docs.github.com/en/developers/webhooks-and-events/webhook-events-and-payloads) that should trigger this workflow.
+A list of [GitHub events](https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads) that should trigger this workflow.
 
 See the Garden Cloud documentation on [configuring workflows](https://cloud.docs.garden.io/getting-started/workflows) for more details.
 
 Supported events:
 
-`pull-request`, `pull-request-closed`, `pull-request-merged`, `pull-request-opened`, `pull-request-reopened`, `pull-request-updated`
+`pull-request`, `pull-request-closed`, `pull-request-merged`, `pull-request-opened`, `pull-request-reopened`, `pull-request-updated`, `push`
 
 
 

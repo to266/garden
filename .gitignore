@@ -19,6 +19,7 @@ node_modules
 *~
 *.swp
 *.swo
+tags
 
 # Runtime files
 .garden
@@ -29,6 +30,7 @@ metadata.json
 *.tfvars
 *.tfvars.json
 *.tfstate.lock.info
+terraform.tfstate.d
 .terraform
 
 # TS cache on the CI
@@ -41,6 +43,7 @@ gulpfile.js
 !core/gulpfile.js
 *.map
 *.tgz
+*.buildinfo
 *.tsbuildinfo
 build/
 dist/

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -91,7 +91,7 @@ describe("GardenProcess", () => {
 
       const running = await GardenProcess.getActiveProcesses()
 
-      expect(running.length).lte(2)
+      expect(running.length).lte(3)
       expect(find(running, (p) => p._id === a._id)).to.exist
       expect(find(running, (p) => p._id === b._id)).to.not.exist
       expect(find(running, (p) => p._id === c._id)).to.not.exist

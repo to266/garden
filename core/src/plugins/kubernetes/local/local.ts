@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -10,9 +10,8 @@ import { configureProvider, configSchema } from "./config"
 import { createGardenPlugin } from "../../../types/plugin/plugin"
 import { dedent } from "../../../util/string"
 import { DOCS_BASE_URL } from "../../../constants"
-import { getProviderUrl } from "../../../docs/common"
 
-const providerUrl = getProviderUrl("kubernetes")
+const providerUrl = "./kubernetes.md"
 
 export const gardenPlugin = () =>
   createGardenPlugin({

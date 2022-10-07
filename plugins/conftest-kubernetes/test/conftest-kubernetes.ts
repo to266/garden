@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2021 Garden Technologies, Inc. <info@garden.io>
+ * Copyright (C) 2018-2022 Garden Technologies, Inc. <info@garden.io>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -23,7 +23,7 @@ describe("conftest-kubernetes provider", () => {
 
   it("should add a conftest module for each helm module, and add runtime dependencies as necessary", async () => {
     const garden = await makeTestGarden(projectRoot, {
-      plugins: [gardenPlugin, conftestPlugin],
+      plugins: [gardenPlugin(), conftestPlugin()],
     })
 
     const graph = await garden.getConfigGraph({ log: garden.log, emit: false })
@@ -33,7 +33,7 @@ describe("conftest-kubernetes provider", () => {
     expect(module.type).to.equal("conftest-helm")
     expect(module.path).to.equal(helmModule.path)
     expect(module.spec).to.eql({
-      build: { dependencies: [] },
+      build: { dependencies: [], timeout: 1200 },
       namespace: "main",
       policyPath: "../custom-policy",
       sourceModule: "helm",
@@ -44,7 +44,7 @@ describe("conftest-kubernetes provider", () => {
 
   it("should add a conftest module for each kubernetes module", async () => {
     const garden = await makeTestGarden(projectRoot, {
-      plugins: [gardenPlugin, conftestPlugin],
+      plugins: [gardenPlugin(), conftestPlugin()],
     })
 
     const graph = await garden.getConfigGraph({ log: garden.log, emit: false })
@@ -53,7 +53,7 @@ describe("conftest-kubernetes provider", () => {
 
     expect(module.path).to.equal(kubernetesModule.path)
     expect(module.spec).to.eql({
-      build: { dependencies: [] },
+      build: { dependencies: [], timeout: 1200 },
       files: kubernetesModule.spec.files,
       namespace: "main",
       policyPath: "../custom-policy",
@@ -65,7 +65,7 @@ describe("conftest-kubernetes provider", () => {
   describe("conftest-helm module", () => {
     it("should be able to test files in a remote Helm chart", async () => {
       const garden = await makeTestGarden(projectRoot, {
-        plugins: [gardenPlugin, conftestPlugin],
+        plugins: [gardenPlugin(), conftestPlugin()],
       })
 
       const graph = await garden.getConfigGraph({ log: garden.log, emit: false })
@@ -80,6 +80,7 @@ describe("conftest-kubernetes provider", () => {
         forceBuild: true,
         devModeServiceNames: [],
         hotReloadServiceNames: [],
+        localModeServiceNames: [],
       })
 
       const key = testTask.getKey()
